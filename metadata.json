@@ -1,0 +1,6 @@
+{
+  "name": "Matrix Latent Autoencoder Studio",
+  "description": "Compress matrix sequences to 8-dimensional latent vectors and reconstruct sparse/dense matrices via configurable probability thresholding.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
