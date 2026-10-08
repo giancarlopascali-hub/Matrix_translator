@@ -19,11 +19,11 @@ Basis files use the versioned `pca-linear-v2` contract. Older basis files are re
 ## Development
 
 ```bash
-npm install
-npm run dev
-npm run lint
-npm run test
-npm run build
+pnpm install --frozen-lockfile
+pnpm run dev
+pnpm run lint
+pnpm run test
+pnpm run build
 ```
 
 The generated Python/NumPy adapter loads the exported JSON basis directly. It does not refit PCA, so its decoding math stays aligned with the web app.
