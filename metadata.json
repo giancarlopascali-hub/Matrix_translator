@@ -1,6 +1,6 @@
 {
   "name": "Matrix Latent Autoencoder Studio",
-  "description": "Compress matrix sequences to 8-dimensional latent vectors and reconstruct sparse/dense matrices via configurable probability thresholding.",
+  "description": "Fit compact PCA representations for matrix libraries, export BO-ready latent vectors with a matched basis, and reconstruct binary or continuous matrices safely.",
   "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }

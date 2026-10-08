@@ -14,12 +14,10 @@ import {
   LatentRow, 
   ReconstructedMatrix, 
   OutputFormatMode, 
-  DiscretizationMode,
   MatrixValueType,
-  DecoderOptions,
   MatrixItem
 } from '../lib/types';
-import { MatrixPCA } from '../lib/autoencoder';
+import { MatrixPCA, PCA_BASIS_SCHEMA_VERSION } from '../lib/autoencoder';
 import { 
   parseLatentCsv,
   formatSparseCooCsv,
@@ -75,6 +73,8 @@ export const LatentDecoderModule: React.FC<LatentDecoderModuleProps> = ({
   initialDimensions,
 }) => {
   const [latentRows, setLatentRows] = useState<LatentRow[]>([]);
+  const [activeModel, setActiveModel] = useState<MatrixPCA>(autoencoder);
+  const [decoderError, setDecoderError] = useState<string | null>(null);
   
   // Matrix Value Mode: Binary {0, 1} vs Continuous numerical values
   const [matrixValueType, setMatrixValueType] = useState<MatrixValueType>('binary_01');
@@ -112,9 +112,8 @@ export const LatentDecoderModule: React.FC<LatentDecoderModuleProps> = ({
     if (initialDimensions) {
       setTargetRows(initialDimensions.rows);
       setTargetCols(initialDimensions.cols);
-      autoencoder.reconfigure(initialDimensions.rows, initialDimensions.cols);
     }
-  }, [initialDimensions, autoencoder]);
+  }, [initialDimensions]);
 
   // Apply dimension update
   const handleUpdateDimensions = (r: number, c: number) => {
@@ -122,12 +121,44 @@ export const LatentDecoderModule: React.FC<LatentDecoderModuleProps> = ({
     const validC = Math.max(1, Math.min(2000, c));
     setTargetRows(validR);
     setTargetCols(validC);
-    autoencoder.reconfigure(validR, validC);
+  };
+
+  const validateLatentRows = (parsed: LatentRow[], model: MatrixPCA): string | null => {
+    if (parsed.length === 0) return 'No valid latent rows were found in the CSV.';
+    const expectedK = parsed[0].z.length;
+    for (const row of parsed) {
+      if (row.z.length !== expectedK) return `Latent row "${row.id}" has a different K value.`;
+      const invalidIndex = row.z.findIndex(value => !Number.isFinite(value) || value < 0 || value > 1);
+      if (invalidIndex >= 0) return `Row "${row.id}" has an invalid z${invalidIndex + 1}; every coordinate must be in [0,1].`;
+    }
+
+    if (!model.hasDecodingBasis) return 'Latent CSV loaded. Upload its matching trained basis JSON to decode it.';
+    const modelK = model.components?.length ?? model.k;
+    if (expectedK !== modelK) return `Latent CSV uses K=${expectedK}, but the loaded basis requires K=${modelK}.`;
+
+    const metadata = parsed[0];
+    if (metadata.detectedK && metadata.detectedK !== expectedK) {
+      return `Latent CSV declares K=${metadata.detectedK}, but contains ${expectedK} z columns.`;
+    }
+    if (metadata.detectedSchemaVersion && metadata.detectedSchemaVersion !== PCA_BASIS_SCHEMA_VERSION) {
+      return `Latent CSV uses unsupported schema version ${metadata.detectedSchemaVersion}.`;
+    }
+    if (metadata.detectedRows && metadata.detectedCols &&
+        (metadata.detectedRows !== model.rows || metadata.detectedCols !== model.cols)) {
+      return `Latent CSV is ${metadata.detectedRows}×${metadata.detectedCols}, but the loaded basis is ${model.rows}×${model.cols}.`;
+    }
+    if (metadata.detectedModelId && metadata.detectedModelId !== model.modelId) {
+      return `Model mismatch: CSV requires ${metadata.detectedModelId}, but the loaded basis is ${model.modelId}.`;
+    }
+    return null;
   };
 
   // Helper to load parsed rows and check for embedded metadata
   const applyLoadedLatentRows = (parsed: LatentRow[]) => {
-    if (parsed.length === 0) return;
+    if (parsed.length === 0) {
+      setDecoderError('No valid latent rows were found in the CSV.');
+      return;
+    }
     setLatentRows(parsed);
     setSelectedMatrixId(parsed[0].id);
 
@@ -145,12 +176,12 @@ export const LatentDecoderModule: React.FC<LatentDecoderModuleProps> = ({
     if (firstRow.detectedRows && firstRow.detectedCols) {
       setTargetRows(firstRow.detectedRows);
       setTargetCols(firstRow.detectedCols);
-      autoencoder.reconfigure(firstRow.detectedRows, firstRow.detectedCols, firstRow.detectedK);
       setDetectedDimensionNotice(
-        `Detected from CSV: ${firstRow.detectedRows} × ${firstRow.detectedCols} (K=${firstRow.detectedK || firstRow.z.length} latent dims).`
+        `Detected from CSV: ${firstRow.detectedRows} × ${firstRow.detectedCols} (K=${firstRow.detectedK || firstRow.z.length}, model ${firstRow.detectedModelId || 'legacy/unidentified'}).`
       );
       setTimeout(() => setDetectedDimensionNotice(null), 6000);
     }
+    setDecoderError(validateLatentRows(parsed, activeModel));
   };
 
   // If initial CSV passed from Module 1 transfer
@@ -173,26 +204,36 @@ export const LatentDecoderModule: React.FC<LatentDecoderModuleProps> = ({
   };
 
   // When PCA Basis JSON is uploaded
+  const loadBasisText = (text: string, fileName: string) => {
+    const candidate = new MatrixPCA(1, 1, 1);
+    const success = candidate.loadBasis(text);
+    if (!success) {
+      setDecoderError(candidate.lastError || 'Invalid PCA basis JSON format.');
+      return false;
+    }
+
+    setActiveModel(candidate);
+    setBasisFileName(fileName);
+    setTargetRows(candidate.rows);
+    setTargetCols(candidate.cols);
+    setMatrixValueType(candidate.valueType);
+    setDecoderError(latentRows.length > 0 ? validateLatentRows(latentRows, candidate) : null);
+    setBasisStatusNotice(
+      `Loaded PCA basis ${candidate.modelId}: ${candidate.rows}×${candidate.cols}, K=${candidate.components?.length || candidate.k}.`
+    );
+    setTimeout(() => setBasisStatusNotice(null), 6000);
+    return true;
+  };
+
   const handleBasisFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
 
     try {
       const text = await file.text();
-      const success = autoencoder.loadBasis(text);
-      if (success) {
-        setBasisFileName(file.name);
-        setTargetRows(autoencoder.rows);
-        setTargetCols(autoencoder.cols);
-        setBasisStatusNotice(
-          `Loaded PCA Basis: ${autoencoder.rows}×${autoencoder.cols} with K=${autoencoder.components?.length || autoencoder.k} components.`
-        );
-        setTimeout(() => setBasisStatusNotice(null), 6000);
-      } else {
-        alert('Invalid PCA Basis JSON format.');
-      }
-    } catch {
-      alert('Could not read PCA Basis JSON file.');
+      loadBasisText(text, file.name);
+    } catch (error) {
+      setDecoderError(error instanceof Error ? error.message : 'Could not read PCA basis JSON file.');
     }
     e.target.value = '';
   };
@@ -205,8 +246,7 @@ export const LatentDecoderModule: React.FC<LatentDecoderModuleProps> = ({
 
     if (file.name.endsWith('.json')) {
       const text = await file.text();
-      autoencoder.loadBasis(text);
-      setBasisFileName(file.name);
+      loadBasisText(text, file.name);
       return;
     }
 
@@ -259,15 +299,22 @@ export const LatentDecoderModule: React.FC<LatentDecoderModuleProps> = ({
     return map;
   }, [groundTruthMatrices]);
 
+  const compatibilityError = latentRows.length > 0
+    ? validateLatentRows(latentRows, activeModel) || (
+      activeModel.hasDecodingBasis &&
+      (targetRows !== activeModel.rows || targetCols !== activeModel.cols)
+        ? `Output dimensions must match the loaded basis (${activeModel.rows}×${activeModel.cols}).`
+        : null
+    )
+    : null;
+
   // Reconstruct all matrices based on options and target dimensions
   const reconstructedMatrices: ReconstructedMatrix[] = useMemo(() => {
-    if (autoencoder.rows !== targetRows || autoencoder.cols !== targetCols) {
-      autoencoder.reconfigure(targetRows, targetCols);
-    }
+    if (compatibilityError || !activeModel.hasDecodingBasis) return [];
 
     return latentRows.map(row => {
       const gt = gtMap.get(row.id);
-      return autoencoder.reconstruct(
+      return activeModel.reconstruct(
         row.id, 
         row.z, 
         { threshold, valueType: matrixValueType },
@@ -282,7 +329,8 @@ export const LatentDecoderModule: React.FC<LatentDecoderModuleProps> = ({
     targetRows, 
     targetCols, 
     gtMap,
-    autoencoder
+    activeModel,
+    compatibilityError,
   ]);
 
   // Toggle selection for a single row
@@ -390,6 +438,7 @@ export const LatentDecoderModule: React.FC<LatentDecoderModuleProps> = ({
   };
 
   const selectedMatrix = reconstructedMatrices.find(m => m.id === selectedMatrixId) || reconstructedMatrices[0];
+  const visibleDecoderError = compatibilityError || decoderError;
 
   return (
     <div className="flex flex-col gap-6">
@@ -443,10 +492,10 @@ export const LatentDecoderModule: React.FC<LatentDecoderModuleProps> = ({
           <div className="flex items-center gap-2">
             <FileCode className="w-4 h-4 text-emerald-700" />
             <span className="font-semibold text-slate-800">PCA Basis Status:</span>
-            {autoencoder.isFitted ? (
+            {activeModel.hasDecodingBasis ? (
               <span className="px-2 py-0.5 bg-emerald-50 border border-emerald-300 rounded font-medium text-emerald-900 flex items-center gap-1">
                 <Check className="w-3 h-3 text-emerald-600" />
-                Active ({autoencoder.rows}×{autoencoder.cols}, K={autoencoder.components?.length || autoencoder.k} components)
+                Active ({activeModel.rows}×{activeModel.cols}, K={activeModel.components?.length || activeModel.k}, model {activeModel.modelId})
                 {basisFileName && <span className="text-slate-500 font-mono">[{basisFileName}]</span>}
               </span>
             ) : (
@@ -483,6 +532,13 @@ export const LatentDecoderModule: React.FC<LatentDecoderModuleProps> = ({
           <div className="mt-3 p-2.5 bg-emerald-50 border border-emerald-200 rounded-lg text-xs text-emerald-800 flex items-center gap-2">
             <Check className="w-4 h-4 text-emerald-600 shrink-0" />
             <span>{basisStatusNotice}</span>
+          </div>
+        )}
+
+        {visibleDecoderError && (
+          <div className="mt-3 p-3 bg-amber-50 border border-amber-300 rounded-lg text-xs text-amber-950 flex items-start gap-2">
+            <AlertTriangle className="w-4 h-4 text-amber-700 shrink-0 mt-0.5" />
+            <span>{visibleDecoderError}</span>
           </div>
         )}
 
@@ -541,7 +597,7 @@ export const LatentDecoderModule: React.FC<LatentDecoderModuleProps> = ({
       </div>
 
       {/* Latent Vectors Loaded -> Controls & Reconstruction */}
-      {latentRows.length > 0 && (
+      {latentRows.length > 0 && !compatibilityError && activeModel.hasDecodingBasis && (
         <div className="flex flex-col gap-6">
           {/* Target Dimensions & Mode Settings Bar */}
           <div className="p-4 bg-white border border-slate-200 rounded-xl flex flex-wrap items-center justify-between gap-4 text-xs shadow-xs">

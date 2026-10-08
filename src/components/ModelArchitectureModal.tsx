@@ -4,7 +4,7 @@
 import React, { useState } from 'react';
 import { MatrixPCA } from '../lib/autoencoder';
 import { downloadBlob } from '../lib/matrixFormats';
-import { X, Copy, Check, Download, Layers, Sparkles, Sliders, Database, Cpu } from 'lucide-react';
+import { X, Copy, Check, Download, Sparkles, Sliders, Cpu, AlertTriangle } from 'lucide-react';
 
 interface ModelArchitectureModalProps {
   isOpen: boolean;
@@ -105,6 +105,9 @@ export const ModelArchitectureModal: React.FC<ModelArchitectureModalProps> = ({
               <p className="leading-relaxed">
                 Each projection is normalized to the unit hypercube <strong>[0, 1]^K</strong>, which matches the standard parameter bounds expected by <strong>EDOS</strong> and Gaussian Process Bayesian Optimizers.
               </p>
+              <p className="leading-relaxed">
+                Exact binary reconstruction is measured after fitting. It is guaranteed for the fitted samples only when the retained components span their affine variation; otherwise the encoder reports the representation as lossy.
+              </p>
             </div>
 
             <div className="bg-slate-50 p-4 border border-slate-200 rounded-lg space-y-2">
@@ -124,11 +127,18 @@ export const ModelArchitectureModal: React.FC<ModelArchitectureModalProps> = ({
             </div>
           </div>
 
+          <div className="flex items-start gap-2 rounded-lg border border-amber-300 bg-amber-50 p-3 text-xs text-amber-950">
+            <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-700" />
+            <span>
+              Latent CSV values and basis JSON are one matched model. Keep them together and do not decode a CSV with a different model ID. The Python helper below loads that same exported basis; it does not refit or approximate it.
+            </span>
+          </div>
+
           {/* Python code section */}
           <div>
             <div className="flex items-center justify-between mb-2">
               <h3 className="text-xs font-bold uppercase tracking-wider text-slate-500">
-                Python / Scikit-Learn Script for BO Integration
+                Python / NumPy Basis Adapter for BO Integration
               </h3>
               <div className="flex items-center gap-2">
                 <button

@@ -303,33 +303,42 @@ export function parseFlattenedCsv(
   const lines = text.split(/\r?\n/).map(l => l.trim()).filter(l => l.length > 0);
   const result: MatrixItem[] = [];
   const expectedDim = rows * cols;
+  const firstDataIndex = lines.findIndex(line => !line.startsWith('#'));
+  const firstDataLine = firstDataIndex >= 0 ? lines[firstDataIndex] : undefined;
+  if (!firstDataLine) return [];
+  const initialDelimiter = firstDataLine.includes('\t') ? '\t' : ',';
+  const initialTokens = firstDataLine.split(initialDelimiter).map(token => token.trim());
+  const firstToken = initialTokens[0]?.toLowerCase();
+  const hasHeader = firstToken === 'matrix_id' || firstToken === 'id' ||
+    initialTokens.slice(1).some(token => /^f\d+$/i.test(token));
+  const headerHasId = hasHeader && (firstToken === 'matrix_id' || firstToken === 'id');
 
   let rowCount = 0;
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
     if (line.startsWith('#')) continue; // Skip comments
+    if (hasHeader && i === firstDataIndex) continue;
 
     const delim = line.includes('\t') ? '\t' : ',';
     const tokens = line.split(delim).map(t => t.trim());
 
-    // Check if first token is an ID string (e.g., "matrix_1, 0, 1, 0...")
-    let id = `matrix_${++rowCount}`;
+    const rowHasId = headerHasId || tokens.length === expectedDim + 1;
+    let id = `matrix_${rowCount + 1}`;
     let valuesTokens = tokens;
-    if (isNaN(Number(tokens[0])) && tokens[0] !== '') {
+    if (rowHasId) {
       id = tokens[0];
       valuesTokens = tokens.slice(1);
     }
 
-    // Must have at least a substantial amount of numbers
-    if (valuesTokens.length === 0) continue;
+    // A malformed row must not be silently padded or truncated.
+    if (!id || valuesTokens.length !== expectedDim) continue;
+    const values = valuesTokens.map(Number);
+    if (values.some(value => !Number.isFinite(value))) continue;
 
-    const data = new Float32Array(expectedDim);
-    for (let k = 0; k < expectedDim && k < valuesTokens.length; k++) {
-      const val = parseFloat(valuesTokens[k]);
-      data[k] = isNaN(val) ? 0 : val;
-    }
+    const data = Float32Array.from(values);
 
     result.push(createMatrixItem(id, id, rows, cols, data));
+    rowCount++;
   }
 
   return result;
@@ -450,6 +459,8 @@ export function parseLatentCsv(text: string): LatentRow[] {
   let detectedCols: number | undefined;
   let detectedK: number | undefined;
   let detectedValueType: 'binary_01' | 'continuous_numeric' | undefined;
+  let detectedModelId: string | undefined;
+  let detectedSchemaVersion: number | undefined;
 
   // Parse comment-line metadata
   for (const line of lines) {
@@ -463,36 +474,64 @@ export function parseLatentCsv(text: string): LatentRow[] {
       if (kMatch) detectedK = parseInt(kMatch[1], 10);
       const vtMatch = line.match(/value_type:\s*(binary_01|continuous_numeric)/i);
       if (vtMatch) detectedValueType = vtMatch[1] as 'binary_01' | 'continuous_numeric';
+      const modelMatch = line.match(/model_id:\s*([^\s]+)/i);
+      if (modelMatch) detectedModelId = modelMatch[1];
+      const schemaMatch = line.match(/schema_version:\s*(\d+)/i);
+      if (schemaMatch) detectedSchemaVersion = parseInt(schemaMatch[1], 10);
+    }
+  }
+
+  let headerLine: string | undefined;
+  let idColumn = -1;
+  let latentColumns: number[] = [];
+  for (const line of lines) {
+    if (line.startsWith('#')) continue;
+    const delim = line.includes('\t') ? '\t' : ',';
+    const tokens = line.split(delim).map(token => token.trim());
+    const candidates = tokens
+      .map((token, index) => ({ token, index }))
+      .filter(({ token }) => /^z\d+$/i.test(token));
+    if (candidates.length > 0) {
+      headerLine = line;
+      idColumn = tokens.findIndex(token => /^(matrix_)?id$/i.test(token));
+      latentColumns = candidates
+        .sort((a, b) => parseInt(a.token.slice(1), 10) - parseInt(b.token.slice(1), 10))
+        .map(candidate => candidate.index);
+      break;
     }
   }
 
   let count = 0;
   for (const line of lines) {
     if (line.startsWith('#')) continue;
+    if (line === headerLine) continue;
     const delim = line.includes('\t') ? '\t' : ',';
     const tokens = line.split(delim).map(t => t.trim());
 
-    // Skip header lines — a true header has ALL tokens non-numeric
-    // (e.g. "matrix_id,z1,z2,..."). A data row always has numeric z values.
-    if (tokens.every(t => isNaN(Number(t)))) continue;
+    let id: string;
+    let numbers: number[];
+    if (latentColumns.length > 0) {
+      id = idColumn >= 0 && tokens[idColumn] ? tokens[idColumn] : `latent_${count + 1}`;
+      numbers = latentColumns.map(index => Number(tokens[index]));
+    } else {
+      // Legacy headerless files: a non-numeric first token is treated as an ID.
+      const numericStart = isNaN(Number(tokens[0])) ? 1 : 0;
+      id = numericStart === 1 ? tokens[0] : `latent_${count + 1}`;
+      numbers = tokens.slice(numericStart).map(Number);
+    }
 
-    // Determine which tokens are numbers
-    const numericStart = isNaN(Number(tokens[0])) ? 1 : 0;
-    let id = numericStart === 1 ? tokens[0] : `latent_${++count}`;
-    if (numericStart === 0) count++;
-
-    const numbers = tokens.slice(numericStart).map(Number).filter(n => !isNaN(n));
-
-    // Accept any K >= 2 (not just exactly 8)
-    if (numbers.length >= 2) {
+    if (id && numbers.length >= 1 && numbers.every(Number.isFinite)) {
       rows.push({
         id,
         z: numbers,
         detectedRows,
         detectedCols,
-        detectedK: numbers.length,
+        detectedK: detectedK ?? numbers.length,
         detectedValueType,
+        detectedModelId,
+        detectedSchemaVersion,
       });
+      count++;
     }
   }
 
@@ -505,7 +544,14 @@ export function parseLatentCsv(text: string): LatentRow[] {
 export function formatLatentCsv(
   items: { id: string; latent: number[] }[],
   includeIdHeader = true,
-  metadata?: { rows: number; cols: number; k?: number; valueType?: 'binary_01' | 'continuous_numeric' }
+  metadata?: {
+    rows: number;
+    cols: number;
+    k?: number;
+    valueType?: 'binary_01' | 'continuous_numeric';
+    modelId?: string;
+    schemaVersion?: number;
+  }
 ): string {
   const K = items[0]?.latent?.length ?? 8;
   let header = '# Matrix PCA Latent Vectors — normalized [0,1] per component\n';
@@ -513,6 +559,8 @@ export function formatLatentCsv(
     header += `# dimensions: ${metadata.rows}x${metadata.cols}\n`;
     header += `# k: ${metadata.k ?? K}\n`;
     if (metadata.valueType) header += `# value_type: ${metadata.valueType}\n`;
+    if (metadata.modelId) header += `# model_id: ${metadata.modelId}\n`;
+    if (metadata.schemaVersion) header += `# schema_version: ${metadata.schemaVersion}\n`;
   }
   header += '# z values are normalized to [0,1] — use the pca_basis.json for decoding\n';
   const colNames = Array.from({ length: K }, (_, i) => `z${i + 1}`).join(',');
@@ -520,8 +568,7 @@ export function formatLatentCsv(
 
   const rows = items.map(item => {
     const zFormatted = item.latent.map(v => {
-      const rounded = Number(v.toFixed(8));
-      return isNaN(rounded) ? '0' : rounded.toString();
+      return Number.isFinite(v) ? v.toString() : '0';
     }).join(',');
     return includeIdHeader ? `${item.id},${zFormatted}` : zFormatted;
   });

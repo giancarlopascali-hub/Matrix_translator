@@ -53,6 +53,8 @@ export interface LatentRow {
   detectedValueType?: MatrixValueType;
   detectedMinVal?: number;
   detectedMaxVal?: number;
+  detectedModelId?: string;
+  detectedSchemaVersion?: number;
 }
 
 /**
@@ -60,6 +62,10 @@ export interface LatentRow {
  * without re-fitting. Upload this JSON in Module 2 for standalone use.
  */
 export interface PCABasis {
+  schemaVersion: number;
+  algorithm: 'pca-linear-v2' | string;
+  modelId: string;
+  valueType: MatrixValueType;
   rows: number;
   cols: number;
   k: number;
@@ -97,6 +103,8 @@ export interface ReconstructedMatrix {
 
 export interface FitResult {
   numComponents: number;
+  requestedComponents?: number;
+  effectiveRank?: number;
   explainedVarianceRatios: number[];   // per-component fractions, sum ≤ 1
   cumulativeVarianceRatios: number[];  // cumulative fractions
 }

@@ -87,7 +87,7 @@ export default function App() {
         <div className="max-w-7xl mx-auto flex flex-col sm:flex-row items-center justify-between gap-2">
           <span>Matrix PCA Studio · Subspace Bottleneck for Bayesian Optimization (BO)</span>
           <span className="text-slate-600 font-mono">
-            Active: {defaultPCA.rows} × {defaultPCA.cols} ({defaultPCA.inputDim} features) → {defaultPCA.k} Latent Dimensions [0, 1]^K
+            Contract: latent CSV model_id + matching basis JSON · z ∈ [0, 1]^K
           </span>
         </div>
       </footer>

@@ -5,8 +5,8 @@
  * and prepares collective CSV downloads and basis exports for Bayesian Optimization (BO).
  */
 import React, { useState, useMemo, useEffect } from 'react';
-import { MatrixItem, InputFormatMode, FitResult } from '../lib/types';
-import { MatrixPCA } from '../lib/autoencoder';
+import { MatrixItem, InputFormatMode } from '../lib/types';
+import { MatrixPCA, PCA_BASIS_SCHEMA_VERSION } from '../lib/autoencoder';
 import { 
   parseMatrixPayload, 
   formatLatentCsv,
@@ -41,7 +41,8 @@ import {
   RefreshCw,
   Sliders,
   SlidersHorizontal,
-  FileCode
+  FileCode,
+  AlertTriangle
 } from 'lucide-react';
 
 interface MatrixEncoderModuleProps {
@@ -67,6 +68,7 @@ export const MatrixEncoderModule: React.FC<MatrixEncoderModuleProps> = ({
   const [isPasteOpen, setIsPasteOpen] = useState<boolean>(false);
   const [isProcessing, setIsProcessing] = useState<boolean>(false);
   const [progressStatus, setProgressStatus] = useState<string | null>(null);
+  const [fitError, setFitError] = useState<string | null>(null);
 
   // Model calibration / fitting state
   const [targetK, setTargetK] = useState<number>(autoencoder.k || 16);
@@ -74,7 +76,11 @@ export const MatrixEncoderModule: React.FC<MatrixEncoderModuleProps> = ({
     count: number; 
     varianceExplained: number; 
     accuracy: number;
-    k: number;
+    exactMatchRate: number;
+    balancedAccuracy: number;
+    recall: number;
+    requestedK: number;
+    effectiveK: number;
   } | null>(null);
 
   // Dynamic matrix dimensions configuration
@@ -104,32 +110,50 @@ export const MatrixEncoderModule: React.FC<MatrixEncoderModuleProps> = ({
     setTargetCols(finalC);
     setTargetK(finalK);
 
-    autoencoder.reconfigure(finalR, finalC, finalK);
-
     if (items.length === 0) {
       setCalibrationInfo(null);
       return;
     }
 
-    const fitRes = autoencoder.fit(items.map(m => m.data));
-    const roundTrip = autoencoder.roundTripMetrics(items.map(m => m.data), 0.5);
+    try {
+      for (const item of items) {
+        if (item.rows !== finalR || item.cols !== finalC || item.data.length !== finalR * finalC) {
+          throw new Error(
+            `All matrices must have exactly the same shape. "${item.id}" is ${item.rows}×${item.cols}; expected ${finalR}×${finalC}.`
+          );
+        }
+      }
 
-    const cumVar = fitRes.cumulativeVarianceRatios.slice(-1)[0] ?? 1.0;
-    setCalibrationInfo({
-      count: items.length,
-      varianceExplained: cumVar,
-      accuracy: roundTrip.meanAccuracy,
-      k: fitRes.numComponents,
-    });
+      autoencoder.reconfigure(finalR, finalC, finalK);
+      const fitRes = autoencoder.fit(items.map(m => m.data));
+      const roundTrip = autoencoder.roundTripMetrics(items.map(m => m.data), 0.5);
 
-    const encoded = items.map(m => ({
-      ...m,
-      latent: autoencoder.encode(m.data)
-    }));
+      const cumVar = fitRes.cumulativeVarianceRatios.slice(-1)[0] ?? 0;
+      setCalibrationInfo({
+        count: items.length,
+        varianceExplained: cumVar,
+        accuracy: roundTrip.meanAccuracy,
+        exactMatchRate: roundTrip.exactMatchRate,
+        balancedAccuracy: roundTrip.balancedAccuracy,
+        recall: roundTrip.recall,
+        requestedK: finalK,
+        effectiveK: fitRes.numComponents,
+      });
+      setFitError(null);
 
-    setMatrices(encoded);
-    if (!selectedMatrixId && encoded.length > 0) {
-      setSelectedMatrixId(encoded[0].id);
+      const encoded = items.map(m => ({
+        ...m,
+        latent: autoencoder.encode(m.data)
+      }));
+
+      setMatrices(encoded);
+      if (!selectedMatrixId && encoded.length > 0) {
+        setSelectedMatrixId(encoded[0].id);
+      }
+    } catch (error) {
+      setCalibrationInfo(null);
+      setFitError(error instanceof Error ? error.message : 'Could not fit the PCA representation.');
+      setMatrices(items.map(item => ({ ...item, latent: undefined })));
     }
   };
 
@@ -143,9 +167,10 @@ export const MatrixEncoderModule: React.FC<MatrixEncoderModuleProps> = ({
   const handleResetCalibration = () => {
     autoencoder.reset();
     setCalibrationInfo(null);
+    setFitError(null);
     setMatrices(prev => prev.map(m => ({
       ...m,
-      latent: autoencoder.encode(m.data)
+      latent: undefined
     })));
   };
 
@@ -170,6 +195,15 @@ export const MatrixEncoderModule: React.FC<MatrixEncoderModuleProps> = ({
   // Helper to process and encode a parsed list of MatrixItems
   const processAndSetMatrices = async (parsed: MatrixItem[]) => {
     if (parsed.length === 0) return;
+
+    const expected = matrices[0] ?? parsed[0];
+    const mismatched = parsed.find(item => item.rows !== expected.rows || item.cols !== expected.cols);
+    if (mismatched) {
+      setFitError(
+        `All matrices in one model must share a shape. "${mismatched.id}" is ${mismatched.rows}×${mismatched.cols}; expected ${expected.rows}×${expected.cols}.`
+      );
+      return;
+    }
 
     // Check if uploaded matrices have different dimensions from current configuration
     const sampleItem = parsed[0];
@@ -342,19 +376,23 @@ export const MatrixEncoderModule: React.FC<MatrixEncoderModuleProps> = ({
 
   // Generate collective download CSV
   const latentCsvText = useMemo(() => {
-    if (matrices.length === 0) return '';
+    if (matrices.length === 0 || !autoencoder.hasDecodingBasis || !autoencoder.modelId) return '';
+    const effectiveK = autoencoder.components?.length ?? 0;
+    if (effectiveK < 1) return '';
     const items = matrices.map(m => ({ 
       id: m.id, 
-      latent: (m.latent && m.latent.length === targetK) ? m.latent : autoencoder.encode(m.data)
+      latent: (m.latent && m.latent.length === effectiveK) ? m.latent : autoencoder.encode(m.data)
     }));
     const isAllBinary = matrices.every(m => m.isBinary);
     return formatLatentCsv(items, includeIdHeader, { 
       rows: targetRows, 
       cols: targetCols,
-      k: targetK,
-      valueType: isAllBinary ? 'binary_01' : 'continuous_numeric'
+      k: effectiveK,
+      valueType: isAllBinary ? 'binary_01' : 'continuous_numeric',
+      modelId: autoencoder.modelId,
+      schemaVersion: PCA_BASIS_SCHEMA_VERSION,
     });
-  }, [matrices, includeIdHeader, targetRows, targetCols, targetK]);
+  }, [matrices, includeIdHeader, targetRows, targetCols, autoencoder, autoencoder.modelId]);
 
   // Collective download action
   const handleDownloadCollectiveCsv = () => {
@@ -363,21 +401,30 @@ export const MatrixEncoderModule: React.FC<MatrixEncoderModuleProps> = ({
       return;
     }
     const blob = new Blob([latentCsvText], { type: 'text/csv;charset=utf-8;' });
-    const filename = `latent_vectors_${matrices.length}matrices_${targetRows}x${targetCols}_k${targetK}.csv`;
+    const effectiveK = autoencoder.components?.length ?? targetK;
+    const modelSuffix = autoencoder.modelId?.replace('pca2-', '').slice(0, 8) ?? 'unidentified';
+    const filename = `latent_vectors_${matrices.length}matrices_${targetRows}x${targetCols}_k${effectiveK}_${modelSuffix}.csv`;
     downloadBlob(blob, filename);
   };
 
   // Export PCA Basis (JSON) action
   const handleDownloadBasisJson = () => {
     // If matrices exist and basis isn't fitted for current dimensions, fit now
-    if (matrices.length > 0 && (!autoencoder.isFitted || autoencoder.rows !== targetRows || autoencoder.cols !== targetCols)) {
+    if (matrices.length > 0 && (!autoencoder.hasDecodingBasis || autoencoder.rows !== targetRows || autoencoder.cols !== targetCols)) {
       fitPcaOnItems(matrices, targetK, targetRows, targetCols);
     }
 
-    const serialized = autoencoder.serializeBasis();
-    const blob = new Blob([serialized], { type: 'application/json;charset=utf-8;' });
-    const filename = `pca_basis_${targetRows}x${targetCols}_k${targetK}.json`;
-    downloadBlob(blob, filename);
+    try {
+      const serialized = autoencoder.serializeBasis();
+      const blob = new Blob([serialized], { type: 'application/json;charset=utf-8;' });
+      const effectiveK = autoencoder.components?.length ?? targetK;
+      const modelSuffix = autoencoder.modelId?.replace('pca2-', '').slice(0, 8) ?? 'unidentified';
+      const filename = `pca_basis_${targetRows}x${targetCols}_k${effectiveK}_${modelSuffix}.json`;
+      downloadBlob(blob, filename);
+    } catch (error) {
+      setFitError(error instanceof Error ? error.message : 'There is no trained basis to download.');
+      return;
+    }
 
     setDownloadedBasis(true);
     setTimeout(() => setDownloadedBasis(false), 2500);
@@ -399,6 +446,7 @@ export const MatrixEncoderModule: React.FC<MatrixEncoderModuleProps> = ({
   };
 
   const selectedMatrix = matrices.find(m => m.id === selectedMatrixId) || matrices[0];
+  const effectiveK = autoencoder.hasDecodingBasis ? (autoencoder.components?.length ?? 0) : 0;
 
   return (
     <div className="flex flex-col gap-6">
@@ -563,20 +611,52 @@ export const MatrixEncoderModule: React.FC<MatrixEncoderModuleProps> = ({
           </div>
         )}
 
+        {fitError && (
+          <div className="mt-3 p-3 bg-amber-50 border border-amber-300 rounded-lg text-xs text-amber-950 flex items-start gap-2">
+            <AlertTriangle className="w-4 h-4 text-amber-700 shrink-0 mt-0.5" />
+            <div>
+              <span className="font-bold">Model not ready:</span>{' '}{fitError}
+            </div>
+          </div>
+        )}
+
         {/* PCA Subspace Fit Status Banner */}
         {calibrationInfo && (
-          <div className="mt-3 p-3 bg-emerald-50 border border-emerald-200 rounded-lg text-xs text-emerald-900 flex flex-wrap items-center justify-between gap-3">
+          <div className={`mt-3 p-3 border rounded-lg text-xs flex flex-wrap items-center justify-between gap-3 ${
+            calibrationInfo.exactMatchRate === 1
+              ? 'bg-emerald-50 border-emerald-200 text-emerald-900'
+              : 'bg-amber-50 border-amber-300 text-amber-950'
+          }`}>
             <div className="flex items-center gap-2">
               <Zap className="w-4 h-4 text-emerald-600 shrink-0" />
               <div>
                 <span className="font-bold">PCA Subspace Fitted:</span>{' '}
-                <span>Fitted on {calibrationInfo.count} matrices with K = {calibrationInfo.k} components.</span>
+                <span>
+                  Fitted on {calibrationInfo.count} matrices with {calibrationInfo.effectiveK} active components
+                  {calibrationInfo.effectiveK < calibrationInfo.requestedK
+                    ? ` (requested ${calibrationInfo.requestedK}; unsupported dimensions were removed).`
+                    : '.'}
+                </span>
                 <span className="ml-2 px-1.5 py-0.5 bg-white border border-emerald-300 rounded font-semibold text-emerald-800">
                   {(calibrationInfo.varianceExplained * 100).toFixed(1)}% Variance Explained
                 </span>
                 <span className="ml-2 px-1.5 py-0.5 bg-white border border-emerald-300 rounded font-semibold text-cyan-800">
                   {(calibrationInfo.accuracy * 100).toFixed(2)}% Round-Trip Hamming Accuracy
                 </span>
+                <span className="ml-2 px-1.5 py-0.5 bg-white border border-slate-300 rounded font-semibold text-slate-800">
+                  {(calibrationInfo.exactMatchRate * 100).toFixed(1)}% Exact Matrices
+                </span>
+                <span className="ml-2 px-1.5 py-0.5 bg-white border border-slate-300 rounded font-semibold text-slate-800">
+                  {(calibrationInfo.balancedAccuracy * 100).toFixed(1)}% Balanced Accuracy
+                </span>
+                <span className="ml-2 px-1.5 py-0.5 bg-white border border-slate-300 rounded font-semibold text-slate-800">
+                  {(calibrationInfo.recall * 100).toFixed(1)}% Ones Recall
+                </span>
+                {calibrationInfo.exactMatchRate < 1 && (
+                  <div className="mt-1 font-semibold text-amber-900">
+                    This representation is lossy. Increase K or use more structured input data before expecting exact reconstruction.
+                  </div>
+                )}
               </div>
             </div>
             <div className="flex items-center gap-2">
@@ -720,7 +800,7 @@ export const MatrixEncoderModule: React.FC<MatrixEncoderModuleProps> = ({
       )}
 
       {/* Main Content Area: Matrix List & Latent CSV Inspector */}
-      {matrices.length > 0 && (
+      {matrices.length > 0 && autoencoder.hasDecodingBasis && latentCsvText && (
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
           {/* Matrix Explorer Column */}
           <div className="lg:col-span-5 bg-white border border-slate-200 rounded-xl p-5 shadow-xs flex flex-col">
@@ -829,7 +909,7 @@ export const MatrixEncoderModule: React.FC<MatrixEncoderModuleProps> = ({
                 {selectedMatrix.latent && (
                   <div>
                     <h5 className="text-[11px] font-bold text-slate-600 mb-1.5 flex items-center justify-between">
-                      <span>Normalized Latent Coordinates (z ∈ [0, 1]^{targetK}):</span>
+                      <span>Normalized Latent Coordinates (z ∈ [0, 1]^{effectiveK}):</span>
                       <span className="text-cyan-700 font-mono">BO Search Hypercube</span>
                     </h5>
                     <div className="grid grid-cols-4 sm:grid-cols-8 gap-1.5">
@@ -860,7 +940,7 @@ export const MatrixEncoderModule: React.FC<MatrixEncoderModuleProps> = ({
               Collective Latent Vectors CSV (Ready for Bayesian Optimization)
             </h3>
             <p className="text-xs text-slate-500 mt-0.5">
-              Contains <strong>{matrices.length} rows</strong> (1 row per matrix) with <strong>{targetK} normalized parameters [z₁ .. z_{targetK}]</strong> in range <code>[0.0, 1.0]</code>.
+              Contains <strong>{matrices.length} rows</strong> (1 row per matrix) with <strong>{effectiveK} active normalized parameters</strong> in range <code>[0.0, 1.0]</code>, paired to model <code>{autoencoder.modelId}</code>.
             </p>
           </div>
 

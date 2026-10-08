@@ -8,7 +8,7 @@
  * Key properties:
  *  - Deterministic & portable (basis exported as JSON)
  *  - Latent vectors normalised to [0,1]^K  → directly compatible with Bayesian Optimization (BO)
- *  - Lossless for N <= K matrices (exact subspace representation)
+ *  - Exact on fitted samples only when their affine rank is <= K
  *  - Supports both binary {0,1} and continuous matrices
  *  - Binary reconstruction strictly uses '>' threshold (value > threshold ? 1 : 0)
  *
@@ -20,6 +20,23 @@
  */
 
 import { PCABasis, FitResult, ReconstructedMatrix, MatrixValueType, DecoderOptions } from './types';
+
+export const PCA_BASIS_SCHEMA_VERSION = 2;
+export const PCA_BASIS_ALGORITHM = 'pca-linear-v2';
+
+type ModelSource = 'preview' | 'trained' | 'imported';
+
+function modelFingerprint(payload: object): string {
+  const text = JSON.stringify(payload);
+  let h1 = 0x811c9dc5;
+  let h2 = 0x9e3779b9;
+  for (let i = 0; i < text.length; i++) {
+    const code = text.charCodeAt(i);
+    h1 = Math.imul(h1 ^ code, 0x01000193) >>> 0;
+    h2 = Math.imul(h2 ^ code, 0x85ebca6b) >>> 0;
+  }
+  return `pca2-${h1.toString(16).padStart(8, '0')}${h2.toString(16).padStart(8, '0')}`;
+}
 
 export class MatrixPCA {
   public rows: number;
@@ -35,17 +52,25 @@ export class MatrixPCA {
   public cumulativeVarianceRatios?: number[];
   public totalVariance?: number;
   public fittedCount?: number;
+  public modelId?: string;
+  public valueType: MatrixValueType = 'binary_01';
+  public modelSource: ModelSource = 'preview';
+  public lastError?: string;
 
   constructor(rows = 45, cols = 45, k = 16) {
-    this.rows = rows;
-    this.cols = cols;
-    this.k = Math.max(2, k);
+    this.rows = Math.max(1, Math.floor(rows));
+    this.cols = Math.max(1, Math.floor(cols));
+    this.k = Math.max(1, Math.min(Math.floor(k), this.rows * this.cols));
     if (!this.tryLoadFromStorage()) {
       this.initCanonicalBasis();
     }
   }
 
   get inputDim(): number { return this.rows * this.cols; }
+
+  get hasDecodingBasis(): boolean {
+    return this.isFitted && this.modelSource !== 'preview' && !!this.modelId;
+  }
 
   // Backward compatibility getters
   get config() {
@@ -177,8 +202,8 @@ export class MatrixPCA {
   }
 
   /**
-   * Initializes a default canonical 2D-DCT basis of size K, ensuring the encoder
-   * is IMMEDIATELY active and never returns all 0.5 values even before calibration.
+   * Initializes a canonical DCT preview. It is deliberately not considered a
+   * trained decoding basis and must never be used for standalone CSV decoding.
    */
   public initCanonicalBasis(): void {
     const D = this.inputDim;
@@ -191,7 +216,11 @@ export class MatrixPCA {
     this.components = components;
     this.zMin = bounds.zMin;
     this.zMax = bounds.zMax;
-    this.isFitted = true;
+    this.isFitted = false;
+    this.modelSource = 'preview';
+    this.modelId = undefined;
+    this.valueType = 'binary_01';
+    this.lastError = undefined;
     this.fittedCount = 0;
     this.totalVariance = 1.0;
     this.explainedVarianceRatios = components.map((_, i) => 1.0 / (i + 1));
@@ -203,14 +232,14 @@ export class MatrixPCA {
   // ─────────────────────────────────────────────────────────────────────────
 
   public reconfigure(rows: number, cols: number, k?: number): void {
-    const r = Math.max(1, rows);
-    const c = Math.max(1, cols);
-    const newK = k !== undefined ? Math.max(2, k) : this.k;
-    if (this.rows === r && this.cols === c && newK === this.k && this.isFitted && this.components?.length === newK) {
+    const r = Math.max(1, Math.floor(rows));
+    const c = Math.max(1, Math.floor(cols));
+    const newK = Math.max(1, Math.min(Math.floor(k ?? this.k), r * c));
+    if (this.rows === r && this.cols === c && newK === this.k) {
       return;
     }
     this.rows = r;
-    this.cols = cols;
+    this.cols = c;
     this.k = newK;
     if (!this.tryLoadFromStorage()) {
       this.initCanonicalBasis();
@@ -228,7 +257,7 @@ export class MatrixPCA {
   }
 
   public calibrateToMatrices(matrices: Float32Array[]): { mae: number; maxError: number; count: number } {
-    const fitRes = this.fit(matrices);
+    this.fit(matrices);
     const roundTrip = this.roundTripMetrics(matrices, 0.5);
     return {
       count: matrices.length,
@@ -238,55 +267,54 @@ export class MatrixPCA {
   }
 
   // ─────────────────────────────────────────────────────────────────────────
-  // Fit — Hybrid PCA with 2D-DCT Basis Completion
+  // Fit — PCA using only data-supported, non-zero-variance components
   // ─────────────────────────────────────────────────────────────────────────
 
   public fit(matrices: Float32Array[]): FitResult {
     const N = matrices.length;
     const D = this.inputDim;
-    const targetK = this.k;
+    const requestedK = this.k;
 
-    if (N < 1) {
-      this.initCanonicalBasis();
-      return { numComponents: this.k, explainedVarianceRatios: this.explainedVarianceRatios || [], cumulativeVarianceRatios: this.cumulativeVarianceRatios || [] };
+    // A failed refit must never leave the previous basis active for new data.
+    this.isFitted = false;
+    this.modelSource = 'preview';
+    this.modelId = undefined;
+
+    if (N < 2) {
+      throw new Error('At least two matrices are required to learn a BO latent representation. One matrix contains no learnable variation.');
     }
 
-    if (N === 1) {
-      // Single matrix: use uncentered coordinate projection onto canonical 2D-DCT basis
-      // so the matrix does not cancel its own mean into 0
-      const mean = new Float64Array(D).fill(0.0);
-      const components = this.generateDctPool(this.rows, this.cols, targetK).slice(0, targetK);
-      const bounds = this.computeBinaryBounds(components, mean, [matrices[0]]);
-
-      this.mean = mean;
-      this.components = components;
-      this.zMin = bounds.zMin;
-      this.zMax = bounds.zMax;
-      this.totalVariance = 1.0;
-      this.fittedCount = 1;
-      this.isFitted = true;
-      this.explainedVarianceRatios = new Array(targetK).fill(1 / targetK);
-      this.cumulativeVarianceRatios = Array.from({ length: targetK }, (_, i) => (i + 1) / targetK);
-
-      this.persistToStorage();
-      return { numComponents: targetK, explainedVarianceRatios: this.explainedVarianceRatios, cumulativeVarianceRatios: this.cumulativeVarianceRatios };
+    for (let i = 0; i < N; i++) {
+      if (matrices[i].length !== D) {
+        throw new Error(`Matrix ${i + 1} has ${matrices[i].length} cells; expected exactly ${D} (${this.rows}×${this.cols}).`);
+      }
+      for (let d = 0; d < D; d++) {
+        if (!Number.isFinite(matrices[i][d])) {
+          throw new Error(`Matrix ${i + 1} contains a non-finite value at flattened cell ${d}.`);
+        }
+      }
     }
+    const fittedValueType: MatrixValueType = matrices.every(matrix => {
+      for (let d = 0; d < matrix.length; d++) {
+        if (matrix[d] !== 0 && matrix[d] !== 1) return false;
+      }
+      return true;
+    }) ? 'binary_01' : 'continuous_numeric';
 
-    // N >= 2: Full PCA with power iteration + DCT completion for dimensions above (N - 1)
-    const kEff = Math.min(targetK, N - 1);
+    const kEff = Math.min(requestedK, N - 1, D);
 
     // ── 1. Empirical Mean ───────────────────────────────────────────────────
     const mean = new Float64Array(D);
     for (let j = 0; j < D; j++) {
       let s = 0;
-      for (let i = 0; i < N; i++) s += (matrices[i][j] || 0);
+      for (let i = 0; i < N; i++) s += matrices[i][j];
       mean[j] = s / N;
     }
 
     // ── 2. Centered matrix rows ──────────────────────────────────────────────
     const C: Float64Array[] = matrices.map(m => {
       const v = new Float64Array(D);
-      for (let j = 0; j < D; j++) v[j] = (m[j] || 0) - mean[j];
+      for (let j = 0; j < D; j++) v[j] = m[j] - mean[j];
       return v;
     });
 
@@ -397,39 +425,41 @@ export class MatrixPCA {
       }
     }
 
-    // ── 7. Complete remaining components up to targetK using 2D-DCT Pool ─────
-    if (components.length < targetK) {
-      const dctPool = this.generateDctPool(this.rows, this.cols, targetK * 3);
-      for (let pIdx = 0; pIdx < dctPool.length && components.length < targetK; pIdx++) {
-        const cand = new Float64Array(dctPool[pIdx]);
-        // Gram-Schmidt orthogonalization against all existing components
-        for (const existing of components) {
-          let dot = 0;
-          for (let d = 0; d < D; d++) dot += cand[d] * existing[d];
-          for (let d = 0; d < D; d++) cand[d] -= dot * existing[d];
-        }
-        let norm = 0;
-        for (let d = 0; d < D; d++) norm += cand[d] * cand[d];
-        norm = Math.sqrt(norm);
-        if (norm > 1e-6) {
-          for (let d = 0; d < D; d++) cand[d] /= norm;
-          components.push(cand);
-          compVars.push(totalVar > 0 ? (totalVar * 0.01) : 0.001);
-        }
+    if (components.length === 0 || totalVar <= 1e-12) {
+      throw new Error('The uploaded matrices contain no measurable variation, so a BO latent representation cannot be fitted.');
+    }
+
+    // Projection bounds are the observed training bounds. Padding would expose
+    // BO dimensions that have never been represented by the fitted data.
+    const zMin = new Array<number>(components.length).fill(Infinity);
+    const zMax = new Array<number>(components.length).fill(-Infinity);
+    for (const centered of C) {
+      for (let k = 0; k < components.length; k++) {
+        let projection = 0;
+        for (let d = 0; d < D; d++) projection += centered[d] * components[k][d];
+        zMin[k] = Math.min(zMin[k], projection);
+        zMax[k] = Math.max(zMax[k], projection);
+      }
+    }
+    for (let k = 0; k < components.length; k++) {
+      if (zMax[k] - zMin[k] <= 1e-10) {
+        throw new Error(`PCA component ${k + 1} has zero usable range.`);
       }
     }
 
-    // ── 8. Compute projection bounds across training matrices & binary hypercube ─
-    const bounds = this.computeBinaryBounds(components, mean, matrices);
-
-    // ── 9. Store results ──────────────────────────────────────────────────────
+    // Store only the empirically supported components. In particular, do not
+    // pad a low-rank data set with arbitrary DCT dimensions.
     this.mean = mean;
     this.components = components;
-    this.zMin = bounds.zMin;
-    this.zMax = bounds.zMax;
+    this.zMin = zMin;
+    this.zMax = zMax;
+    this.k = components.length;
     this.totalVariance = totalVar;
     this.fittedCount = N;
     this.isFitted = true;
+    this.modelSource = 'trained';
+    this.valueType = fittedValueType;
+    this.lastError = undefined;
 
     const explainedVarianceRatios = compVars.map(v => totalVar > 1e-12 ? Math.min(1.0, v / totalVar) : 1.0 / components.length);
     const cumulativeVarianceRatios: number[] = [];
@@ -441,19 +471,43 @@ export class MatrixPCA {
 
     this.explainedVarianceRatios = explainedVarianceRatios;
     this.cumulativeVarianceRatios = cumulativeVarianceRatios;
+    this.modelId = this.computeModelId();
 
     this.persistToStorage();
 
-    return { numComponents: components.length, explainedVarianceRatios, cumulativeVarianceRatios };
+    return {
+      numComponents: components.length,
+      requestedComponents: requestedK,
+      effectiveRank: components.length,
+      explainedVarianceRatios,
+      cumulativeVarianceRatios,
+    };
+  }
+
+  private computeModelId(): string {
+    if (!this.mean || !this.components || !this.zMin || !this.zMax) {
+      throw new Error('Cannot fingerprint an incomplete PCA basis.');
+    }
+    return modelFingerprint({
+      schemaVersion: PCA_BASIS_SCHEMA_VERSION,
+      algorithm: PCA_BASIS_ALGORITHM,
+      valueType: this.valueType,
+      rows: this.rows,
+      cols: this.cols,
+      k: this.components.length,
+      mean: Array.from(this.mean),
+      components: this.components.map(component => Array.from(component)),
+      zMin: this.zMin,
+      zMax: this.zMax,
+    });
   }
 
   private persistToStorage(): void {
     try {
-      if (typeof window !== 'undefined' && window.localStorage && this.components) {
+      if (typeof window !== 'undefined' && window.localStorage && this.hasDecodingBasis) {
         const serialized = this.serializeBasis();
         if (serialized) {
-          window.localStorage.setItem(`pca_basis_${this.rows}x${this.cols}_k${this.components.length}`, serialized);
-          window.localStorage.setItem('pca_basis_latest', serialized);
+          window.localStorage.setItem(`pca_basis_${this.rows}x${this.cols}_k${this.components!.length}`, serialized);
         }
       }
     } catch { /* ignore storage quota */ }
@@ -464,8 +518,11 @@ export class MatrixPCA {
   // ─────────────────────────────────────────────────────────────────────────
 
   public encode(x: Float32Array): number[] {
-    if (!this.isFitted || !this.mean || !this.components || this.components.length === 0) {
-      this.initCanonicalBasis();
+    if (!this.hasDecodingBasis || !this.mean || !this.components || this.components.length === 0) {
+      throw new Error('Fit or import a PCA basis before encoding matrices.');
+    }
+    if (x.length !== this.inputDim) {
+      throw new Error(`Cannot encode ${x.length} cells with a ${this.rows}×${this.cols} (${this.inputDim}-cell) basis.`);
     }
     const D = this.inputDim;
     const K = this.components!.length;
@@ -475,7 +532,8 @@ export class MatrixPCA {
       let proj = 0;
       const comp = this.components![k];
       for (let d = 0; d < D; d++) {
-        proj += ((x[d] || 0) - this.mean![d]) * comp[d];
+        if (!Number.isFinite(x[d])) throw new Error(`Matrix contains a non-finite value at flattened cell ${d}.`);
+        proj += (x[d] - this.mean![d]) * comp[d];
       }
 
       const minVal = this.zMin?.[k] ?? -1.0;
@@ -494,17 +552,23 @@ export class MatrixPCA {
   // ─────────────────────────────────────────────────────────────────────────
 
   public decode(z: number[]): Float32Array {
-    if (!this.isFitted || !this.mean || !this.components || this.components.length === 0) {
-      return new Float32Array(this.inputDim).fill(0);
+    if (!this.hasDecodingBasis || !this.mean || !this.components || this.components.length === 0) {
+      throw new Error('Import a trained PCA basis before decoding latent vectors.');
     }
     const D = this.inputDim;
     const K = this.components.length;
+    if (z.length !== K) {
+      throw new Error(`Latent vector has K=${z.length}; this basis requires exactly K=${K}.`);
+    }
     const x = new Float32Array(D);
 
     for (let d = 0; d < D; d++) x[d] = this.mean[d];
 
-    for (let k = 0; k < Math.min(z.length, K); k++) {
-      const zk = Math.max(0, Math.min(1, z[k] ?? 0.5));
+    for (let k = 0; k < K; k++) {
+      if (!Number.isFinite(z[k]) || z[k] < 0 || z[k] > 1) {
+        throw new Error(`Latent coordinate z${k + 1} must be finite and inside [0,1].`);
+      }
+      const zk = z[k];
       const rawZ = zk * (this.zMax![k] - this.zMin![k]) + this.zMin![k];
       const comp = this.components[k];
       for (let d = 0; d < D; d++) x[d] += rawZ * comp[d];
@@ -643,24 +707,49 @@ export class MatrixPCA {
   public roundTripMetrics(matrices: Float32Array[], threshold = 0.5): {
     meanAccuracy: number;
     perMatrix: number[];
+    exactMatchRate: number;
+    balancedAccuracy: number;
+    precision: number;
+    recall: number;
+    f1: number;
   } {
     const D = this.inputDim;
     const perMatrix: number[] = [];
+    let exactMatches = 0;
+    let tp = 0, tn = 0, fp = 0, fn = 0;
     for (const m of matrices) {
       const z = this.encode(m);
       const recon = this.decodeBinary(z, threshold);
       let correct = 0;
       for (let d = 0; d < D; d++) {
-        const orig = (m[d] || 0) > 0.5 ? 1 : 0;
+        const orig = m[d] > 0.5 ? 1 : 0;
         const pred = recon[d] > 0.5 ? 1 : 0;
         if (orig === pred) correct++;
+        if (orig === 1 && pred === 1) tp++;
+        else if (orig === 0 && pred === 0) tn++;
+        else if (orig === 0 && pred === 1) fp++;
+        else fn++;
       }
+      if (correct === D) exactMatches++;
       perMatrix.push(correct / D);
     }
     const meanAccuracy = perMatrix.length > 0 
       ? perMatrix.reduce((a, b) => a + b, 0) / perMatrix.length 
       : 1.0;
-    return { meanAccuracy, perMatrix };
+    const truePositiveRate = tp + fn > 0 ? tp / (tp + fn) : 1;
+    const trueNegativeRate = tn + fp > 0 ? tn / (tn + fp) : 1;
+    const precision = tp + fp > 0 ? tp / (tp + fp) : 1;
+    const recall = truePositiveRate;
+    const f1 = precision + recall > 0 ? (2 * precision * recall) / (precision + recall) : 0;
+    return {
+      meanAccuracy,
+      perMatrix,
+      exactMatchRate: matrices.length > 0 ? exactMatches / matrices.length : 1,
+      balancedAccuracy: (truePositiveRate + trueNegativeRate) / 2,
+      precision,
+      recall,
+      f1,
+    };
   }
 
   // ─────────────────────────────────────────────────────────────────────────
@@ -668,11 +757,16 @@ export class MatrixPCA {
   // ─────────────────────────────────────────────────────────────────────────
 
   public serializeBasis(): string {
-    if (!this.mean || !this.components || this.components.length === 0) {
-      this.initCanonicalBasis();
+    if (!this.hasDecodingBasis || !this.mean || !this.components || this.components.length === 0) {
+      throw new Error('There is no trained PCA basis to export. Fit at least two varying matrices first.');
     }
+    this.modelId = this.computeModelId();
 
     const basis: PCABasis = {
+      schemaVersion: PCA_BASIS_SCHEMA_VERSION,
+      algorithm: PCA_BASIS_ALGORITHM,
+      modelId: this.modelId,
+      valueType: this.valueType,
       rows: this.rows,
       cols: this.cols,
       k: this.components!.length,
@@ -688,21 +782,89 @@ export class MatrixPCA {
   }
 
   public loadBasis(json: string): boolean {
+    this.lastError = undefined;
     try {
       const b: PCABasis = JSON.parse(json);
-      if (!b.mean || !b.components || !Array.isArray(b.components)) return false;
+      const fail = (message: string): false => {
+        this.lastError = message;
+        return false;
+      };
+
+      if (!b || typeof b !== 'object') return fail('Basis JSON must contain an object.');
+      if (b.schemaVersion !== PCA_BASIS_SCHEMA_VERSION) {
+        return fail('This basis uses an old or unsupported schema. Re-encode the matrices and export a new matching basis JSON.');
+      }
+      if (b.algorithm !== PCA_BASIS_ALGORITHM) {
+        return fail(`Unsupported basis algorithm "${b.algorithm}".`);
+      }
+      if (!b.modelId) return fail('Basis modelId is missing. Re-export the basis from the encoder.');
+      if (b.valueType !== 'binary_01' && b.valueType !== 'continuous_numeric') {
+        return fail('Basis valueType must be binary_01 or continuous_numeric.');
+      }
+      if (!Number.isInteger(b.rows) || b.rows < 1 || !Number.isInteger(b.cols) || b.cols < 1) {
+        return fail('Basis rows and columns must be positive integers.');
+      }
+      if (!Number.isInteger(b.k) || b.k < 1) return fail('Basis K must be a positive integer.');
+
+      const D = b.rows * b.cols;
+      if (!Array.isArray(b.mean) || b.mean.length !== D || b.mean.some(v => !Number.isFinite(v))) {
+        return fail(`Basis mean must contain exactly ${D} finite values.`);
+      }
+      if (!Array.isArray(b.components) || b.components.length !== b.k) {
+        return fail(`Basis must contain exactly K=${b.k} components.`);
+      }
+      for (let k = 0; k < b.components.length; k++) {
+        const component = b.components[k];
+        if (!Array.isArray(component) || component.length !== D || component.some(v => !Number.isFinite(v))) {
+          return fail(`Basis component ${k + 1} must contain exactly ${D} finite values.`);
+        }
+        let normSq = 0;
+        for (const value of component) normSq += value * value;
+        if (Math.abs(Math.sqrt(normSq) - 1) > 1e-4) {
+          return fail(`Basis component ${k + 1} is not normalized.`);
+        }
+      }
+      if (!Array.isArray(b.zMin) || !Array.isArray(b.zMax) || b.zMin.length !== b.k || b.zMax.length !== b.k) {
+        return fail(`Basis projection bounds must contain exactly K=${b.k} values.`);
+      }
+      for (let k = 0; k < b.k; k++) {
+        if (!Number.isFinite(b.zMin[k]) || !Number.isFinite(b.zMax[k]) || b.zMax[k] - b.zMin[k] <= 1e-10) {
+          return fail(`Basis projection bounds for z${k + 1} are invalid.`);
+        }
+      }
+
+      const computedModelId = modelFingerprint({
+        schemaVersion: PCA_BASIS_SCHEMA_VERSION,
+        algorithm: PCA_BASIS_ALGORITHM,
+        valueType: b.valueType,
+        rows: b.rows,
+        cols: b.cols,
+        k: b.k,
+        mean: b.mean,
+        components: b.components,
+        zMin: b.zMin,
+        zMax: b.zMax,
+      });
+      if (b.modelId !== computedModelId) {
+        return fail('Basis modelId does not match its numerical contents. The file may be damaged or edited.');
+      }
 
       this.rows = b.rows;
       this.cols = b.cols;
       this.k = b.k;
       this.mean = new Float64Array(b.mean);
       this.components = b.components.map((c: number[]) => new Float64Array(c));
-      this.zMin = b.zMin;
-      this.zMax = b.zMax;
-      this.explainedVarianceRatios = b.explainedVarianceRatios;
-      this.totalVariance = b.totalVariance;
-      this.fittedCount = b.fittedCount;
+      this.zMin = [...b.zMin];
+      this.zMax = [...b.zMax];
+      this.explainedVarianceRatios = Array.isArray(b.explainedVarianceRatios)
+        ? b.explainedVarianceRatios.filter(Number.isFinite)
+        : [];
+      this.totalVariance = Number.isFinite(b.totalVariance) ? b.totalVariance : 0;
+      this.fittedCount = Number.isInteger(b.fittedCount) && b.fittedCount >= 0 ? b.fittedCount : 0;
       this.isFitted = true;
+      this.modelSource = 'imported';
+      this.modelId = computedModelId;
+      this.valueType = b.valueType;
 
       const cumulative: number[] = [];
       let cum = 0;
@@ -713,7 +875,8 @@ export class MatrixPCA {
       this.cumulativeVarianceRatios = cumulative;
 
       return true;
-    } catch {
+    } catch (error) {
+      this.lastError = error instanceof Error ? error.message : 'Invalid basis JSON.';
       return false;
     }
   }
@@ -722,9 +885,20 @@ export class MatrixPCA {
     try {
       if (typeof window === 'undefined' || !window.localStorage) return false;
       const key = `pca_basis_${this.rows}x${this.cols}_k${this.k}`;
-      const raw = window.localStorage.getItem(key) || window.localStorage.getItem('pca_basis_latest');
+      const raw = window.localStorage.getItem(key);
       if (!raw) return false;
-      return this.loadBasis(raw);
+      const expectedRows = this.rows;
+      const expectedCols = this.cols;
+      const expectedK = this.k;
+      const loaded = this.loadBasis(raw);
+      if (!loaded || this.rows !== expectedRows || this.cols !== expectedCols || this.k !== expectedK) {
+        this.rows = expectedRows;
+        this.cols = expectedCols;
+        this.k = expectedK;
+        this.initCanonicalBasis();
+        return false;
+      }
+      return true;
     } catch {
       return false;
     }
@@ -734,7 +908,6 @@ export class MatrixPCA {
     try {
       if (typeof window !== 'undefined' && window.localStorage) {
         window.localStorage.removeItem(`pca_basis_${this.rows}x${this.cols}_k${this.k}`);
-        window.localStorage.removeItem('pca_basis_latest');
       }
     } catch { /* ignore */ }
   }
@@ -745,206 +918,160 @@ export class MatrixPCA {
 
   public generatePythonScript(threshold = 0.5): string {
     return `"""
-Matrix PCA & Bayesian Optimization Pipeline
----------------------------------------------
-Matrix Dimension: ${this.rows} x ${this.cols} (${this.inputDim} features)
-Latent Dimension: K = ${this.k} components (bounded in [0.0, 1.0]^K)
-Binary Threshold: strictly > ${threshold}
+Matrix PCA basis adapter for Bayesian Optimization
+---------------------------------------------------
+This script uses the exact basis JSON exported by Matrix PCA Studio.
+It deliberately does not refit PCA or invent fallback components, so Python
+and the web decoder always implement the same numerical model.
 
-Designed for Bayesian Optimization (BO) workflows (e.g. EDOS family modules):
-1. Fit PCA basis on initial matrix library.
-2. Normalize projections to [0, 1]^K for the optimizer's search space.
-3. BO proposes new candidate vectors z* in [0, 1]^K.
-4. Decoder projects back and applies strictly '>' threshold to reconstruct binary matrices.
+Expected app configuration when generated:
+- Matrix dimension: ${this.rows} x ${this.cols}
+- Latent dimension: K = ${this.k}
+- Binary rule: reconstructed value > ${threshold} becomes 1; otherwise 0
 """
 
+import csv
 import json
+from pathlib import Path
+
 import numpy as np
 
-ROWS = ${this.rows}
-COLS = ${this.cols}
-D = ROWS * COLS
-K = ${this.k}
-THRESHOLD = ${threshold}
+
+SUPPORTED_SCHEMA_VERSION = 2
+SUPPORTED_ALGORITHM = "pca-linear-v2"
+DEFAULT_THRESHOLD = ${threshold}
+
 
 class MatrixPCABOPipeline:
-    def __init__(self, rows=ROWS, cols=COLS, k=K, threshold=THRESHOLD):
-        self.rows = rows
-        self.cols = cols
-        self.d = rows * cols
-        self.k = k
-        self.threshold = threshold
-        self.mean = np.zeros(self.d, dtype=np.float64)
-        self.components = np.zeros((k, self.d), dtype=np.float64)
-        self.z_min = np.zeros(k, dtype=np.float64)
-        self.z_max = np.ones(k, dtype=np.float64)
-        self.init_canonical_dct_basis()
+    """Encode and decode with one immutable Matrix PCA Studio basis."""
 
-    def generate_dct_basis(self, count):
-        coords = []
-        for u in range(self.rows):
-            for v in range(self.cols):
-                coords.append((u**2 + v**2, u, v))
-        coords.sort(key=lambda x: (x[0], x[1], x[2]))
-        
-        basis = []
-        for idx in range(min(len(coords), max(count, 64))):
-            _, u, v = coords[idx]
-            phi = np.zeros((self.rows, self.cols))
-            au = 1.0 / np.sqrt(self.rows) if u == 0 else np.sqrt(2.0 / self.rows)
-            av = 1.0 / np.sqrt(self.cols) if v == 0 else np.sqrt(2.0 / self.cols)
-            for r in range(self.rows):
-                for c in range(self.cols):
-                    phi[r, c] = au * av * np.cos(np.pi * (2*r + 1) * u / (2 * self.rows)) * np.cos(np.pi * (2*c + 1) * v / (2 * self.cols))
-            basis.append(phi.flatten())
-        return np.array(basis)
+    def __init__(self, basis):
+        if basis.get("schemaVersion") != SUPPORTED_SCHEMA_VERSION:
+            raise ValueError(
+                "Unsupported or legacy basis schema. Re-export the basis from Matrix PCA Studio."
+            )
+        if basis.get("algorithm") != SUPPORTED_ALGORITHM:
+            raise ValueError(f"Unsupported basis algorithm: {basis.get('algorithm')!r}")
+        if not basis.get("modelId"):
+            raise ValueError("Basis modelId is missing.")
 
-    def init_canonical_dct_basis(self):
-        pool = self.generate_dct_basis(self.k)
-        self.components = pool[:self.k]
-        self.mean = np.zeros(self.d, dtype=np.float64)
-        self.compute_binary_bounds()
-
-    def compute_binary_bounds(self, sample_matrices=None):
-        z_min = []
-        z_max = []
-        for k in range(self.k):
-            comp = self.components[k]
-            w_pos = np.maximum(0, comp)
-            w_neg = np.minimum(0, comp)
-            mu_w = np.dot(self.mean, comp)
-            b_max = np.sum(w_pos) - mu_w
-            b_min = np.sum(w_neg) - mu_w
-            
-            if sample_matrices is not None and len(sample_matrices) > 1:
-                projs = [np.dot(m - self.mean, comp) for m in sample_matrices]
-                s_min, s_max = min(projs), max(projs)
-                if s_max - s_min > 1e-4:
-                    pad = max(0.05, (s_max - s_min) * 0.20)
-                    z_min.append(max(b_min, s_min - pad))
-                    z_max.append(min(b_max, s_max + pad))
-                else:
-                    z_min.append(b_min)
-                    z_max.append(b_max)
-            else:
-                z_min.append(b_min)
-                z_max.append(b_max)
-        self.z_min = np.array(z_min)
-        self.z_max = np.array(z_max)
-
-    def fit(self, matrices: np.ndarray):
-        """
-        matrices: shape (N, D) or (N, ROWS, COLS) with values {0, 1}
-        """
-        x = matrices.reshape((matrices.shape[0], self.d)).astype(np.float64)
-        N = len(x)
-        if N < 1:
-            self.init_canonical_dct_basis()
-            return self
-
-        if N == 1:
-            self.mean = np.zeros(self.d)
-            self.components = self.generate_dct_basis(self.k)[:self.k]
-            self.compute_binary_bounds(x)
-            return self
-
-        mean = np.mean(x, axis=0)
-        c = x - mean
-        gram = np.dot(c, c.T)
-        eigvals, eigvecs = np.linalg.eigh(gram)
-        idx = np.argsort(eigvals)[::-1]
-        eigvals = eigvals[idx]
-        eigvecs = eigvecs[:, idx]
-
-        comps = []
-        k_eff = min(self.k, N - 1)
-        for k in range(k_eff):
-            lam = eigvals[k]
-            if lam < 1e-8: break
-            u = eigvecs[:, k]
-            scale = 1.0 / np.sqrt(lam)
-            comp = np.dot(u * scale, c)
-            norm = np.linalg.norm(comp)
-            if norm > 1e-10:
-                comps.append(comp / norm)
-
-        # Complete to K components with DCT
-        if len(comps) < self.k:
-            pool = self.generate_dct_basis(self.k * 3)
-            for cand in pool:
-                if len(comps) >= self.k: break
-                v = cand.copy()
-                for existing in comps:
-                    v -= np.dot(v, existing) * existing
-                norm = np.linalg.norm(v)
-                if norm > 1e-6:
-                    comps.append(v / norm)
-
-        self.mean = mean
-        self.components = np.array(comps[:self.k])
-        self.compute_binary_bounds(x)
-        return self
-
-    def encode(self, matrices: np.ndarray) -> np.ndarray:
-        """
-        Encodes matrices to normalized latent coordinates in [0, 1]^K.
-        Returns: array of shape (N, K)
-        """
-        x = matrices.reshape((matrices.shape[0], self.d)).astype(np.float64)
-        projs = np.dot(x - self.mean, self.components.T)
-        rng = np.maximum(1e-10, self.z_max - self.z_min)
-        z_norm = np.clip((projs - self.z_min) / rng, 0.0, 1.0)
-        return z_norm
-
-    def decode_binary(self, z_norm: np.ndarray, threshold: float = None) -> np.ndarray:
-        """
-        Decodes normalized latent vectors in [0, 1]^K back to binary matrices.
-        Reconstruction rule: strictly '>' threshold.
-        Returns: array of shape (N, ROWS, COLS) with values in {0.0, 1.0}
-        """
-        if threshold is None:
-            threshold = self.threshold
-        z = np.clip(np.atleast_2d(z_norm), 0.0, 1.0)
-        raw_z = z * (self.z_max - self.z_min) + self.z_min
-        continuous = self.mean + np.dot(raw_z, self.components)
-        binary = (continuous > threshold).astype(np.float32)
-        return binary.reshape((-1, self.rows, self.cols))
-
-    def export_basis_json(self, filepath: str = "pca_basis.json"):
-        basis = {
-            "rows": self.rows,
-            "cols": self.cols,
-            "k": self.k,
-            "mean": self.mean.tolist(),
-            "components": self.components.tolist(),
-            "zMin": self.z_min.tolist(),
-            "zMax": self.z_max.tolist(),
-            "explainedVarianceRatios": [1.0 / self.k] * self.k,
-            "totalVariance": 1.0,
-            "fittedCount": 0
-        }
-        with open(filepath, "w") as f:
-            json.dump(basis, f, indent=2)
-        print(f"Exported PCA Basis to {filepath}")
-
-    def load_basis_json(self, filepath: str = "pca_basis.json"):
-        with open(filepath, "r") as f:
-            basis = json.load(f)
-        self.rows = basis["rows"]
-        self.cols = basis["cols"]
+        self.rows = int(basis["rows"])
+        self.cols = int(basis["cols"])
         self.d = self.rows * self.cols
-        self.k = basis["k"]
-        self.mean = np.array(basis["mean"], dtype=np.float64)
-        self.components = np.array(basis["components"], dtype=np.float64)
-        self.z_min = np.array(basis["zMin"], dtype=np.float64)
-        self.z_max = np.array(basis["zMax"], dtype=np.float64)
-        print(f"Loaded PCA Basis from {filepath}")
+        self.k = int(basis["k"])
+        self.model_id = str(basis["modelId"])
+        self.value_type = basis.get("valueType")
+        self.mean = np.asarray(basis["mean"], dtype=np.float64)
+        self.components = np.asarray(basis["components"], dtype=np.float64)
+        self.z_min = np.asarray(basis["zMin"], dtype=np.float64)
+        self.z_max = np.asarray(basis["zMax"], dtype=np.float64)
+
+        if self.rows < 1 or self.cols < 1 or self.k < 1:
+            raise ValueError("Basis dimensions and K must be positive.")
+        if self.value_type not in ("binary_01", "continuous_numeric"):
+            raise ValueError("Basis valueType is missing or unsupported.")
+        if self.mean.shape != (self.d,):
+            raise ValueError(f"Basis mean must have shape ({self.d},).")
+        if self.components.shape != (self.k, self.d):
+            raise ValueError(f"Basis components must have shape ({self.k}, {self.d}).")
+        if self.z_min.shape != (self.k,) or self.z_max.shape != (self.k,):
+            raise ValueError(f"Basis bounds must each have shape ({self.k},).")
+        if not all(
+            np.all(np.isfinite(values))
+            for values in (self.mean, self.components, self.z_min, self.z_max)
+        ):
+            raise ValueError("Basis contains non-finite values.")
+        if np.any(self.z_max - self.z_min <= 1e-10):
+            raise ValueError("Every latent component must have a positive projection range.")
+        if not np.allclose(np.linalg.norm(self.components, axis=1), 1.0, atol=1e-4):
+            raise ValueError("Basis components are not normalized.")
+
+    @classmethod
+    def from_basis(cls, filepath="pca_basis.json"):
+        basis = json.loads(Path(filepath).read_text(encoding="utf-8"))
+        return cls(basis)
+
+    def _matrix_batch(self, matrices):
+        values = np.asarray(matrices, dtype=np.float64)
+        if values.ndim == 1:
+            values = values.reshape(1, -1)
+        elif values.ndim == 2 and values.shape == (self.rows, self.cols):
+            values = values.reshape(1, -1)
+        elif values.ndim == 3 and values.shape[1:] == (self.rows, self.cols):
+            values = values.reshape(values.shape[0], -1)
+        elif values.ndim != 2:
+            raise ValueError("Matrices must be flattened or supplied as rows x columns arrays.")
+
+        if values.shape[1] != self.d:
+            raise ValueError(f"Each matrix must contain exactly {self.d} cells.")
+        if not np.all(np.isfinite(values)):
+            raise ValueError("Matrices contain non-finite values.")
+        return values
+
+    def encode(self, matrices):
+        """Return normalized BO parameters in [0, 1]^K."""
+        values = self._matrix_batch(matrices)
+        projections = (values - self.mean) @ self.components.T
+        normalized = (projections - self.z_min) / (self.z_max - self.z_min)
+        return np.clip(normalized, 0.0, 1.0)
+
+    def decode_continuous(self, z_normalized):
+        """Decode one vector or a batch; invalid BO coordinates are rejected."""
+        z = np.asarray(z_normalized, dtype=np.float64)
+        if z.ndim == 1:
+            z = z.reshape(1, -1)
+        if z.ndim != 2 or z.shape[1] != self.k:
+            raise ValueError(f"Each latent vector must contain exactly K={self.k} values.")
+        if not np.all(np.isfinite(z)) or np.any(z < 0.0) or np.any(z > 1.0):
+            raise ValueError("Every latent coordinate must be finite and inside [0, 1].")
+
+        raw_z = z * (self.z_max - self.z_min) + self.z_min
+        reconstructed = self.mean + raw_z @ self.components
+        return reconstructed.reshape((-1, self.rows, self.cols))
+
+    def decode_binary(self, z_normalized, threshold=DEFAULT_THRESHOLD):
+        """Apply the app's strict binary rule: value > threshold."""
+        return (self.decode_continuous(z_normalized) > threshold).astype(np.uint8)
+
+    def read_latent_csv(self, filepath):
+        """Read Matrix PCA Studio or BO CSV output by z-column name."""
+        lines = [
+            line
+            for line in Path(filepath).read_text(encoding="utf-8-sig").splitlines()
+            if line.strip() and not line.lstrip().startswith("#")
+        ]
+        if not lines:
+            raise ValueError("Latent CSV has no data.")
+
+        reader = csv.DictReader(lines)
+        fieldnames = reader.fieldnames or []
+        z_columns = sorted(
+            (name for name in fieldnames if name.lower().startswith("z") and name[1:].isdigit()),
+            key=lambda name: int(name[1:]),
+        )
+        if len(z_columns) != self.k:
+            raise ValueError(
+                f"Latent CSV has {len(z_columns)} z columns; basis requires K={self.k}."
+            )
+
+        ids = []
+        rows = []
+        for index, row in enumerate(reader, start=1):
+            ids.append(row.get("matrix_id") or row.get("id") or f"candidate_{index}")
+            rows.append([float(row[name]) for name in z_columns])
+        z = np.asarray(rows, dtype=np.float64)
+        self.decode_continuous(z)  # Validate shape, finiteness, and [0, 1] bounds.
+        return ids, z
 
 
-# Example usage:
 if __name__ == "__main__":
-    pipeline = MatrixPCABOPipeline(rows=${this.rows}, cols=${this.cols}, k=${this.k})
-    print(f"Matrix PCA Studio pipeline initialized for {pipeline.rows}x{pipeline.cols} matrices.")
+    pipeline = MatrixPCABOPipeline.from_basis("pca_basis.json")
+    candidate_ids, candidate_z = pipeline.read_latent_csv("latent_vectors.csv")
+    decoded = pipeline.decode_binary(candidate_z)
+    print(
+        f"Decoded {len(decoded)} matrices with model {pipeline.model_id} "
+        f"({pipeline.rows}x{pipeline.cols}, K={pipeline.k})."
+    )
 `;
   }
 
