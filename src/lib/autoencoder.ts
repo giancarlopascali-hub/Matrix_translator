@@ -40,6 +40,9 @@ export class MatrixPCA {
     this.rows = rows;
     this.cols = cols;
     this.k = Math.max(2, k);
+    if (!this.tryLoadFromStorage()) {
+      this.initCanonicalBasis();
+    }
   }
 
   get inputDim(): number { return this.rows * this.cols; }
@@ -71,6 +74,131 @@ export class MatrixPCA {
   }
 
   // ─────────────────────────────────────────────────────────────────────────
+  // Canonical 2D-DCT Orthonormal Basis & Bounds Generation
+  // ─────────────────────────────────────────────────────────────────────────
+
+  /**
+   * Generates a 2D Discrete Cosine Transform (DCT-II) orthonormal basis for R x C matrices.
+   * Sorted by spatial frequency (u^2 + v^2) so early dimensions capture broad patterns
+   * (DC density, horizontal/vertical gradients, quadrants) and later capture fine details.
+   */
+  public generateDctPool(rows: number, cols: number, count: number): Float64Array[] {
+    const D = rows * cols;
+    const coords: { dist: number; u: number; v: number }[] = [];
+    for (let u = 0; u < rows; u++) {
+      for (let v = 0; v < cols; v++) {
+        coords.push({ dist: u * u + v * v, u, v });
+      }
+    }
+    coords.sort((a, b) => a.dist - b.dist || a.u - b.u || a.v - b.v);
+
+    const pool: Float64Array[] = [];
+    const maxK = Math.min(coords.length, Math.max(count, 64));
+
+    for (let k = 0; k < maxK; k++) {
+      const { u, v } = coords[k];
+      const phi = new Float64Array(D);
+      const alphaU = u === 0 ? Math.sqrt(1.0 / rows) : Math.sqrt(2.0 / rows);
+      const alphaV = v === 0 ? Math.sqrt(1.0 / cols) : Math.sqrt(2.0 / cols);
+
+      for (let r = 0; r < rows; r++) {
+        const cosU = Math.cos((Math.PI * (2 * r + 1) * u) / (2 * rows));
+        const rOff = r * cols;
+        for (let c = 0; c < cols; c++) {
+          const cosV = Math.cos((Math.PI * (2 * c + 1) * v) / (2 * cols));
+          phi[rOff + c] = alphaU * alphaV * cosU * cosV;
+        }
+      }
+      pool.push(phi);
+    }
+    return pool;
+  }
+
+  /**
+   * Computes exact theoretical projection bounds for binary {0, 1} matrices on given components,
+   * with optional sample calibration padding for Bayesian Optimization hypercube exploration.
+   */
+  public computeBinaryBounds(
+    components: Float64Array[], 
+    mean: Float64Array, 
+    sampleMatrices?: (Float64Array | Float32Array)[]
+  ): { zMin: number[]; zMax: number[] } {
+    const D = this.inputDim;
+    const K = components.length;
+    const zMin = new Array<number>(K);
+    const zMax = new Array<number>(K);
+
+    for (let k = 0; k < K; k++) {
+      const comp = components[k];
+      let bMax = 0;
+      let bMin = 0;
+      let muDot = 0;
+
+      for (let d = 0; d < D; d++) {
+        const cd = comp[d];
+        muDot += mean[d] * cd;
+        if (cd > 0) bMax += cd;
+        else if (cd < 0) bMin += cd;
+      }
+      bMax -= muDot;
+      bMin -= muDot;
+
+      if (sampleMatrices && sampleMatrices.length > 1) {
+        let sMin = Infinity;
+        let sMax = -Infinity;
+        for (const sm of sampleMatrices) {
+          let proj = 0;
+          for (let d = 0; d < D; d++) proj += (sm[d] - mean[d]) * comp[d];
+          if (proj < sMin) sMin = proj;
+          if (proj > sMax) sMax = proj;
+        }
+
+        if (sMax - sMin > 1e-4) {
+          const pad = Math.max(0.05, (sMax - sMin) * 0.20);
+          zMin[k] = Math.max(bMin, sMin - pad);
+          zMax[k] = Math.min(bMax, sMax + pad);
+        } else {
+          zMin[k] = bMin;
+          zMax[k] = bMax;
+        }
+      } else {
+        zMin[k] = bMin;
+        zMax[k] = bMax;
+      }
+
+      // Safeguard against zero range: binary bounds span is >= 1.0
+      if (zMax[k] - zMin[k] < 1e-4) {
+        zMin[k] = bMin;
+        zMax[k] = bMax;
+      }
+    }
+
+    return { zMin, zMax };
+  }
+
+  /**
+   * Initializes a default canonical 2D-DCT basis of size K, ensuring the encoder
+   * is IMMEDIATELY active and never returns all 0.5 values even before calibration.
+   */
+  public initCanonicalBasis(): void {
+    const D = this.inputDim;
+    const dctPool = this.generateDctPool(this.rows, this.cols, this.k);
+    const components = dctPool.slice(0, this.k);
+    const mean = new Float64Array(D).fill(0.0);
+
+    const bounds = this.computeBinaryBounds(components, mean);
+    this.mean = mean;
+    this.components = components;
+    this.zMin = bounds.zMin;
+    this.zMax = bounds.zMax;
+    this.isFitted = true;
+    this.fittedCount = 0;
+    this.totalVariance = 1.0;
+    this.explainedVarianceRatios = components.map((_, i) => 1.0 / (i + 1));
+    this.cumulativeVarianceRatios = components.map((_, i) => Math.min(1.0, (i + 1) / components.length));
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
   // Configuration
   // ─────────────────────────────────────────────────────────────────────────
 
@@ -78,25 +206,20 @@ export class MatrixPCA {
     const r = Math.max(1, rows);
     const c = Math.max(1, cols);
     const newK = k !== undefined ? Math.max(2, k) : this.k;
-    if (this.rows === r && this.cols === c && newK === this.k) return;
+    if (this.rows === r && this.cols === c && newK === this.k && this.isFitted && this.components?.length === newK) {
+      return;
+    }
     this.rows = r;
     this.cols = cols;
     this.k = newK;
-    this.reset();
-    // Try to restore from localStorage for this exact size
-    this.tryLoadFromStorage();
+    if (!this.tryLoadFromStorage()) {
+      this.initCanonicalBasis();
+    }
   }
 
   public reset(): void {
-    this.isFitted = false;
-    this.mean = undefined;
-    this.components = undefined;
-    this.zMin = undefined;
-    this.zMax = undefined;
-    this.explainedVarianceRatios = undefined;
-    this.cumulativeVarianceRatios = undefined;
-    this.totalVariance = undefined;
-    this.fittedCount = undefined;
+    this.clearStorage();
+    this.initCanonicalBasis();
   }
 
   // Compatibility aliases
@@ -115,36 +238,44 @@ export class MatrixPCA {
   }
 
   // ─────────────────────────────────────────────────────────────────────────
-  // Fit — proper PCA via Gram-matrix power iteration
+  // Fit — Hybrid PCA with 2D-DCT Basis Completion
   // ─────────────────────────────────────────────────────────────────────────
 
   public fit(matrices: Float32Array[]): FitResult {
     const N = matrices.length;
     const D = this.inputDim;
+    const targetK = this.k;
 
     if (N < 1) {
-      return { numComponents: 0, explainedVarianceRatios: [], cumulativeVarianceRatios: [] };
+      this.initCanonicalBasis();
+      return { numComponents: this.k, explainedVarianceRatios: this.explainedVarianceRatios || [], cumulativeVarianceRatios: this.cumulativeVarianceRatios || [] };
     }
 
     if (N === 1) {
-      const mean = new Float64Array(D);
-      for (let j = 0; j < D; j++) mean[j] = matrices[0][j] || 0;
+      // Single matrix: use uncentered coordinate projection onto canonical 2D-DCT basis
+      // so the matrix does not cancel its own mean into 0
+      const mean = new Float64Array(D).fill(0.0);
+      const components = this.generateDctPool(this.rows, this.cols, targetK).slice(0, targetK);
+      const bounds = this.computeBinaryBounds(components, mean, [matrices[0]]);
+
       this.mean = mean;
-      this.components = [new Float64Array(D)];
-      this.zMin = [0];
-      this.zMax = [1];
-      this.explainedVarianceRatios = [1.0];
-      this.cumulativeVarianceRatios = [1.0];
-      this.totalVariance = 0;
+      this.components = components;
+      this.zMin = bounds.zMin;
+      this.zMax = bounds.zMax;
+      this.totalVariance = 1.0;
       this.fittedCount = 1;
       this.isFitted = true;
-      return { numComponents: 1, explainedVarianceRatios: [1.0], cumulativeVarianceRatios: [1.0] };
+      this.explainedVarianceRatios = new Array(targetK).fill(1 / targetK);
+      this.cumulativeVarianceRatios = Array.from({ length: targetK }, (_, i) => (i + 1) / targetK);
+
+      this.persistToStorage();
+      return { numComponents: targetK, explainedVarianceRatios: this.explainedVarianceRatios, cumulativeVarianceRatios: this.cumulativeVarianceRatios };
     }
 
-    // How many components we can realistically extract
-    const kEff = Math.min(this.k, N - 1);
+    // N >= 2: Full PCA with power iteration + DCT completion for dimensions above (N - 1)
+    const kEff = Math.min(targetK, N - 1);
 
-    // ── 1. Mean ─────────────────────────────────────────────────────────────
+    // ── 1. Empirical Mean ───────────────────────────────────────────────────
     const mean = new Float64Array(D);
     for (let j = 0; j < D; j++) {
       let s = 0;
@@ -233,7 +364,7 @@ export class MatrixPCA {
         for (let j = 0; j < N; j++) tmp += G[off + j] * u[j];
         lambda += u[i] * tmp;
       }
-      if (lambda < 1e-10) break;
+      if (lambda < 1e-8) break;
 
       eigenVecs.push(u);
       eigenVals.push(lambda);
@@ -256,63 +387,76 @@ export class MatrixPCA {
         for (let d = 0; d < D; d++) p[d] += coeff * ci[d];
       }
 
-      components.push(p);
-      compVars.push(lambda / N);
-    }
-
-    // ── 7. z-bounds across training matrices ─────────────────────────────────
-    const zMin = new Array<number>(components.length).fill(Infinity);
-    const zMax = new Array<number>(components.length).fill(-Infinity);
-
-    for (const ci of C) {
-      for (let k = 0; k < components.length; k++) {
-        let proj = 0;
-        const comp = components[k];
-        for (let d = 0; d < D; d++) proj += ci[d] * comp[d];
-        if (proj < zMin[k]) zMin[k] = proj;
-        if (proj > zMax[k]) zMax[k] = proj;
+      let pNorm = 0;
+      for (let d = 0; d < D; d++) pNorm += p[d] * p[d];
+      pNorm = Math.sqrt(pNorm);
+      if (pNorm > 1e-10) {
+        for (let d = 0; d < D; d++) p[d] /= pNorm;
+        components.push(p);
+        compVars.push(lambda / N);
       }
     }
 
-    // Pad bounds by 10% so BO can explore slightly outside the training range
-    for (let k = 0; k < components.length; k++) {
-      const pad = Math.max(0.1, (zMax[k] - zMin[k]) * 0.1);
-      zMin[k] -= pad;
-      zMax[k] += pad;
+    // ── 7. Complete remaining components up to targetK using 2D-DCT Pool ─────
+    if (components.length < targetK) {
+      const dctPool = this.generateDctPool(this.rows, this.cols, targetK * 3);
+      for (let pIdx = 0; pIdx < dctPool.length && components.length < targetK; pIdx++) {
+        const cand = new Float64Array(dctPool[pIdx]);
+        // Gram-Schmidt orthogonalization against all existing components
+        for (const existing of components) {
+          let dot = 0;
+          for (let d = 0; d < D; d++) dot += cand[d] * existing[d];
+          for (let d = 0; d < D; d++) cand[d] -= dot * existing[d];
+        }
+        let norm = 0;
+        for (let d = 0; d < D; d++) norm += cand[d] * cand[d];
+        norm = Math.sqrt(norm);
+        if (norm > 1e-6) {
+          for (let d = 0; d < D; d++) cand[d] /= norm;
+          components.push(cand);
+          compVars.push(totalVar > 0 ? (totalVar * 0.01) : 0.001);
+        }
+      }
     }
 
-    // ── 8. Store results ──────────────────────────────────────────────────────
+    // ── 8. Compute projection bounds across training matrices & binary hypercube ─
+    const bounds = this.computeBinaryBounds(components, mean, matrices);
+
+    // ── 9. Store results ──────────────────────────────────────────────────────
     this.mean = mean;
     this.components = components;
-    this.zMin = zMin;
-    this.zMax = zMax;
+    this.zMin = bounds.zMin;
+    this.zMax = bounds.zMax;
     this.totalVariance = totalVar;
     this.fittedCount = N;
     this.isFitted = true;
 
-    const explainedVarianceRatios = compVars.map(v => totalVar > 1e-12 ? v / totalVar : 0);
+    const explainedVarianceRatios = compVars.map(v => totalVar > 1e-12 ? Math.min(1.0, v / totalVar) : 1.0 / components.length);
     const cumulativeVarianceRatios: number[] = [];
     let cumSum = 0;
     for (const r of explainedVarianceRatios) {
       cumSum += r;
-      cumulativeVarianceRatios.push(Math.min(1, cumSum));
+      cumulativeVarianceRatios.push(Math.min(1.0, cumSum));
     }
 
     this.explainedVarianceRatios = explainedVarianceRatios;
     this.cumulativeVarianceRatios = cumulativeVarianceRatios;
 
-    // Persist in localStorage for cross-session use in Module 2
+    this.persistToStorage();
+
+    return { numComponents: components.length, explainedVarianceRatios, cumulativeVarianceRatios };
+  }
+
+  private persistToStorage(): void {
     try {
-      if (typeof window !== 'undefined' && window.localStorage) {
+      if (typeof window !== 'undefined' && window.localStorage && this.components) {
         const serialized = this.serializeBasis();
         if (serialized) {
-          window.localStorage.setItem(`pca_basis_${this.rows}x${this.cols}_k${components.length}`, serialized);
+          window.localStorage.setItem(`pca_basis_${this.rows}x${this.cols}_k${this.components.length}`, serialized);
           window.localStorage.setItem('pca_basis_latest', serialized);
         }
       }
     } catch { /* ignore storage quota */ }
-
-    return { numComponents: components.length, explainedVarianceRatios, cumulativeVarianceRatios };
   }
 
   // ─────────────────────────────────────────────────────────────────────────
@@ -321,20 +465,25 @@ export class MatrixPCA {
 
   public encode(x: Float32Array): number[] {
     if (!this.isFitted || !this.mean || !this.components || this.components.length === 0) {
-      return new Array<number>(this.k).fill(0.5);
+      this.initCanonicalBasis();
     }
     const D = this.inputDim;
-    const K = this.components.length;
+    const K = this.components!.length;
     const z = new Array<number>(K);
 
     for (let k = 0; k < K; k++) {
       let proj = 0;
-      const comp = this.components[k];
-      for (let d = 0; d < D; d++) proj += ((x[d] || 0) - this.mean[d]) * comp[d];
+      const comp = this.components![k];
+      for (let d = 0; d < D; d++) {
+        proj += ((x[d] || 0) - this.mean![d]) * comp[d];
+      }
 
-      const range = this.zMax![k] - this.zMin![k];
+      const minVal = this.zMin?.[k] ?? -1.0;
+      const maxVal = this.zMax?.[k] ?? 1.0;
+      const range = maxVal - minVal;
+
       z[k] = range > 1e-10
-        ? Math.max(0, Math.min(1, (proj - this.zMin![k]) / range))
+        ? Math.max(0, Math.min(1, (proj - minVal) / range))
         : 0.5;
     }
     return z;
@@ -520,39 +669,17 @@ export class MatrixPCA {
 
   public serializeBasis(): string {
     if (!this.mean || !this.components || this.components.length === 0) {
-      // If not fitted, generate a canonical basis for the active rows x cols
-      const D = this.inputDim;
-      const k = Math.min(this.k, D);
-      const mean = new Float64Array(D);
-      const components: Float64Array[] = [];
-      for (let i = 0; i < k; i++) {
-        const comp = new Float64Array(D);
-        if (i < D) comp[i] = 1.0;
-        components.push(comp);
-      }
-      const basis: PCABasis = {
-        rows: this.rows,
-        cols: this.cols,
-        k: components.length,
-        mean: Array.from(mean),
-        components: components.map(c => Array.from(c)),
-        zMin: new Array(components.length).fill(0),
-        zMax: new Array(components.length).fill(1),
-        explainedVarianceRatios: new Array(components.length).fill(1 / Math.max(1, components.length)),
-        totalVariance: 1.0,
-        fittedCount: 0,
-      };
-      return JSON.stringify(basis, null, 2);
+      this.initCanonicalBasis();
     }
 
     const basis: PCABasis = {
       rows: this.rows,
       cols: this.cols,
-      k: this.components.length,
-      mean: Array.from(this.mean),
-      components: this.components.map(c => Array.from(c)),
-      zMin: this.zMin || new Array(this.components.length).fill(0),
-      zMax: this.zMax || new Array(this.components.length).fill(1),
+      k: this.components!.length,
+      mean: Array.from(this.mean!),
+      components: this.components!.map(c => Array.from(c)),
+      zMin: this.zMin || new Array(this.components!.length).fill(0),
+      zMax: this.zMax || new Array(this.components!.length).fill(1),
       explainedVarianceRatios: this.explainedVarianceRatios || [],
       totalVariance: this.totalVariance || 0,
       fittedCount: this.fittedCount || 0,
@@ -633,7 +760,6 @@ Designed for Bayesian Optimization (BO) workflows (e.g. EDOS family modules):
 
 import json
 import numpy as np
-from sklearn.decomposition import PCA
 
 ROWS = ${this.rows}
 COLS = ${this.cols}
@@ -648,20 +774,115 @@ class MatrixPCABOPipeline:
         self.d = rows * cols
         self.k = k
         self.threshold = threshold
-        self.pca = PCA(n_components=k)
-        self.z_min = None
-        self.z_max = None
+        self.mean = np.zeros(self.d, dtype=np.float64)
+        self.components = np.zeros((k, self.d), dtype=np.float64)
+        self.z_min = np.zeros(k, dtype=np.float64)
+        self.z_max = np.ones(k, dtype=np.float64)
+        self.init_canonical_dct_basis()
+
+    def generate_dct_basis(self, count):
+        coords = []
+        for u in range(self.rows):
+            for v in range(self.cols):
+                coords.append((u**2 + v**2, u, v))
+        coords.sort(key=lambda x: (x[0], x[1], x[2]))
+        
+        basis = []
+        for idx in range(min(len(coords), max(count, 64))):
+            _, u, v = coords[idx]
+            phi = np.zeros((self.rows, self.cols))
+            au = 1.0 / np.sqrt(self.rows) if u == 0 else np.sqrt(2.0 / self.rows)
+            av = 1.0 / np.sqrt(self.cols) if v == 0 else np.sqrt(2.0 / self.cols)
+            for r in range(self.rows):
+                for c in range(self.cols):
+                    phi[r, c] = au * av * np.cos(np.pi * (2*r + 1) * u / (2 * self.rows)) * np.cos(np.pi * (2*c + 1) * v / (2 * self.cols))
+            basis.append(phi.flatten())
+        return np.array(basis)
+
+    def init_canonical_dct_basis(self):
+        pool = self.generate_dct_basis(self.k)
+        self.components = pool[:self.k]
+        self.mean = np.zeros(self.d, dtype=np.float64)
+        self.compute_binary_bounds()
+
+    def compute_binary_bounds(self, sample_matrices=None):
+        z_min = []
+        z_max = []
+        for k in range(self.k):
+            comp = self.components[k]
+            w_pos = np.maximum(0, comp)
+            w_neg = np.minimum(0, comp)
+            mu_w = np.dot(self.mean, comp)
+            b_max = np.sum(w_pos) - mu_w
+            b_min = np.sum(w_neg) - mu_w
+            
+            if sample_matrices is not None and len(sample_matrices) > 1:
+                projs = [np.dot(m - self.mean, comp) for m in sample_matrices]
+                s_min, s_max = min(projs), max(projs)
+                if s_max - s_min > 1e-4:
+                    pad = max(0.05, (s_max - s_min) * 0.20)
+                    z_min.append(max(b_min, s_min - pad))
+                    z_max.append(min(b_max, s_max + pad))
+                else:
+                    z_min.append(b_min)
+                    z_max.append(b_max)
+            else:
+                z_min.append(b_min)
+                z_max.append(b_max)
+        self.z_min = np.array(z_min)
+        self.z_max = np.array(z_max)
 
     def fit(self, matrices: np.ndarray):
         """
-        matrices: shape (N, D) or (N, ROWS, COLS)
+        matrices: shape (N, D) or (N, ROWS, COLS) with values {0, 1}
         """
         x = matrices.reshape((matrices.shape[0], self.d)).astype(np.float64)
-        self.pca.fit(x)
-        proj = self.pca.transform(x)
-        pad = np.maximum(0.1, (proj.max(axis=0) - proj.min(axis=0)) * 0.1)
-        self.z_min = proj.min(axis=0) - pad
-        self.z_max = proj.max(axis=0) + pad
+        N = len(x)
+        if N < 1:
+            self.init_canonical_dct_basis()
+            return self
+
+        if N == 1:
+            self.mean = np.zeros(self.d)
+            self.components = self.generate_dct_basis(self.k)[:self.k]
+            self.compute_binary_bounds(x)
+            return self
+
+        mean = np.mean(x, axis=0)
+        c = x - mean
+        gram = np.dot(c, c.T)
+        eigvals, eigvecs = np.linalg.eigh(gram)
+        idx = np.argsort(eigvals)[::-1]
+        eigvals = eigvals[idx]
+        eigvecs = eigvecs[:, idx]
+
+        comps = []
+        k_eff = min(self.k, N - 1)
+        for k in range(k_eff):
+            lam = eigvals[k]
+            if lam < 1e-8: break
+            u = eigvecs[:, k]
+            scale = 1.0 / np.sqrt(lam)
+            comp = np.dot(u * scale, c)
+            norm = np.linalg.norm(comp)
+            if norm > 1e-10:
+                comps.append(comp / norm)
+
+        # Complete to K components with DCT
+        if len(comps) < self.k:
+            pool = self.generate_dct_basis(self.k * 3)
+            for cand in pool:
+                if len(comps) >= self.k: break
+                v = cand.copy()
+                for existing in comps:
+                    v -= np.dot(v, existing) * existing
+                norm = np.linalg.norm(v)
+                if norm > 1e-6:
+                    comps.append(v / norm)
+
+        self.mean = mean
+        self.components = np.array(comps[:self.k])
+        self.compute_binary_bounds(x)
         return self
 
     def encode(self, matrices: np.ndarray) -> np.ndarray:
@@ -670,9 +891,9 @@ class MatrixPCABOPipeline:
         Returns: array of shape (N, K)
         """
         x = matrices.reshape((matrices.shape[0], self.d)).astype(np.float64)
-        proj = self.pca.transform(x)
+        projs = np.dot(x - self.mean, self.components.T)
         rng = np.maximum(1e-10, self.z_max - self.z_min)
-        z_norm = np.clip((proj - self.z_min) / rng, 0.0, 1.0)
+        z_norm = np.clip((projs - self.z_min) / rng, 0.0, 1.0)
         return z_norm
 
     def decode_binary(self, z_norm: np.ndarray, threshold: float = None) -> np.ndarray:
@@ -685,8 +906,7 @@ class MatrixPCABOPipeline:
             threshold = self.threshold
         z = np.clip(np.atleast_2d(z_norm), 0.0, 1.0)
         raw_z = z * (self.z_max - self.z_min) + self.z_min
-        continuous = self.pca.inverse_transform(raw_z)
-        # Strictly '>' threshold assignment:
+        continuous = self.mean + np.dot(raw_z, self.components)
         binary = (continuous > threshold).astype(np.float32)
         return binary.reshape((-1, self.rows, self.cols))
 
@@ -695,13 +915,13 @@ class MatrixPCABOPipeline:
             "rows": self.rows,
             "cols": self.cols,
             "k": self.k,
-            "mean": self.pca.mean_.tolist(),
-            "components": self.pca.components_.tolist(),
+            "mean": self.mean.tolist(),
+            "components": self.components.tolist(),
             "zMin": self.z_min.tolist(),
             "zMax": self.z_max.tolist(),
-            "explainedVarianceRatios": self.pca.explained_variance_ratio_.tolist(),
-            "totalVariance": float(np.sum(self.pca.explained_variance_)),
-            "fittedCount": int(self.pca.n_samples_seen_)
+            "explainedVarianceRatios": [1.0 / self.k] * self.k,
+            "totalVariance": 1.0,
+            "fittedCount": 0
         }
         with open(filepath, "w") as f:
             json.dump(basis, f, indent=2)
@@ -714,8 +934,8 @@ class MatrixPCABOPipeline:
         self.cols = basis["cols"]
         self.d = self.rows * self.cols
         self.k = basis["k"]
-        self.pca.mean_ = np.array(basis["mean"], dtype=np.float64)
-        self.pca.components_ = np.array(basis["components"], dtype=np.float64)
+        self.mean = np.array(basis["mean"], dtype=np.float64)
+        self.components = np.array(basis["components"], dtype=np.float64)
         self.z_min = np.array(basis["zMin"], dtype=np.float64)
         self.z_max = np.array(basis["zMax"], dtype=np.float64)
         print(f"Loaded PCA Basis from {filepath}")

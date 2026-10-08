@@ -191,19 +191,10 @@ export const MatrixEncoderModule: React.FC<MatrixEncoderModuleProps> = ({
 
     const combinedAll = [...matrices, ...parsed];
 
-    if (combinedAll.length >= 2) {
-      setProgressStatus(`Fitting PCA basis to ${combinedAll.length} matrices...`);
+    if (combinedAll.length > 0) {
+      setProgressStatus(`Fitting PCA basis to ${combinedAll.length} matrix${combinedAll.length > 1 ? 'es' : ''}...`);
       await new Promise(resolve => setTimeout(resolve, 10));
       fitPcaOnItems(combinedAll, targetK, activeR, activeC);
-    } else {
-      const itemsWithLatent = combinedAll.map(m => ({
-        ...m,
-        latent: autoencoder.encode(m.data)
-      }));
-      setMatrices(itemsWithLatent);
-      if (!selectedMatrixId && itemsWithLatent.length > 0) {
-        setSelectedMatrixId(itemsWithLatent[0].id);
-      }
     }
 
     setProgressStatus(null);
@@ -354,7 +345,7 @@ export const MatrixEncoderModule: React.FC<MatrixEncoderModuleProps> = ({
     if (matrices.length === 0) return '';
     const items = matrices.map(m => ({ 
       id: m.id, 
-      latent: m.latent || new Array(targetK).fill(0.5) 
+      latent: (m.latent && m.latent.length === targetK) ? m.latent : autoencoder.encode(m.data)
     }));
     const isAllBinary = matrices.every(m => m.isBinary);
     return formatLatentCsv(items, includeIdHeader, { 

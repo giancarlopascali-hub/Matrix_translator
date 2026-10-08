@@ -91,7 +91,7 @@ export function parseFastaOrSequences(text: string, targetLength: number = 200):
  * Parse a dense 2D CSV/TSV table into a single matrix
  */
 export function parseDense2DTable(text: string, id: string = 'matrix_1', name: string = 'Matrix 1'): MatrixItem | null {
-  const lines = text.split(/\r?\n/).map(l => l.trim()).filter(l => l.length > 0);
+  const lines = text.split(/\r?\n/).map(l => l.trim()).filter(l => l.length > 0 && !l.startsWith('#') && !l.startsWith('//'));
   if (lines.length === 0) return null;
 
   // Detect delimiter
@@ -120,6 +120,91 @@ export function parseDense2DTable(text: string, id: string = 'matrix_1', name: s
   }
 
   return createMatrixItem(id, name, rows, cols, data);
+}
+
+/**
+ * Parse one or multiple dense 2D matrices from a single CSV/TSV payload.
+ * Supports:
+ *  1. Matrices separated by blank lines
+ *  2. Matrices separated by comment/ID headers (e.g. "# Matrix 1" or ">mat1")
+ *  3. Vertically stacked matrices where total lines is a multiple of targetRows (e.g. 90 lines = 2 x 45x45 matrices)
+ *  4. Single standard 2D matrix
+ */
+export function parseDense2DTables(
+  text: string, 
+  baseId: string = 'matrix',
+  targetRows = 45,
+  targetCols = 45
+): MatrixItem[] {
+  const trimmed = text.trim();
+  if (!trimmed) return [];
+
+  // 1. Check for blank-line separation between blocks
+  const rawBlocks = trimmed.split(/\r?\n\s*\r?\n+/).map(b => b.trim()).filter(b => b.length > 0);
+  if (rawBlocks.length > 1) {
+    const items: MatrixItem[] = [];
+    for (let i = 0; i < rawBlocks.length; i++) {
+      const bText = rawBlocks[i];
+      const firstLine = bText.split(/\r?\n/)[0]?.trim() || '';
+      let id = `${baseId}_${i + 1}`;
+      if (firstLine.startsWith('#') || firstLine.startsWith('>')) {
+        const cleaned = firstLine.replace(/^[#>/\-\s]+/, '').trim();
+        if (cleaned) id = cleaned;
+      }
+      const item = parseDense2DTable(bText, id, id);
+      if (item) items.push(item);
+    }
+    if (items.length > 0) return items;
+  }
+
+  // 2. Check for comments / header lines like "# Matrix 1" or ">mat1"
+  const lines = trimmed.split(/\r?\n/).map(l => l.trim()).filter(l => l.length > 0);
+  const headerIndices: number[] = [];
+  for (let i = 0; i < lines.length; i++) {
+    const l = lines[i];
+    if (l.startsWith('#') || l.startsWith('>') || l.startsWith('//') || l.startsWith('---')) {
+      headerIndices.push(i);
+    }
+  }
+  if (headerIndices.length > 1) {
+    const items: MatrixItem[] = [];
+    for (let h = 0; h < headerIndices.length; h++) {
+      const start = headerIndices[h] + 1;
+      const end = h + 1 < headerIndices.length ? headerIndices[h + 1] : lines.length;
+      const subText = lines.slice(start, end).join('\n');
+      const headerText = lines[headerIndices[h]].replace(/^[#>/\-\s]+/, '').trim();
+      const id = headerText || `${baseId}_${h + 1}`;
+      const item = parseDense2DTable(subText, id, id);
+      if (item) items.push(item);
+    }
+    if (items.length > 0) return items;
+  }
+
+  // 3. Single block — check if stacked multiple of targetRows
+  const single = parseDense2DTable(trimmed, baseId, baseId);
+  if (single) {
+    if (
+      targetRows > 0 && 
+      targetCols > 0 && 
+      single.cols === targetCols && 
+      single.rows > targetRows && 
+      single.rows % targetRows === 0
+    ) {
+      const numMatrices = single.rows / targetRows;
+      const items: MatrixItem[] = [];
+      const cellsPerMat = targetRows * targetCols;
+      for (let m = 0; m < numMatrices; m++) {
+        const subData = new Float32Array(cellsPerMat);
+        subData.set(single.data.subarray(m * cellsPerMat, (m + 1) * cellsPerMat));
+        const id = `${baseId}_${m + 1}`;
+        items.push(createMatrixItem(id, id, targetRows, targetCols, subData));
+      }
+      return items;
+    }
+    return [single];
+  }
+
+  return [];
 }
 
 /**
@@ -274,8 +359,7 @@ export function parseMatrixPayload(
     return parseFlattenedCsv(trimmed, targetRows, targetCols);
   }
   if (forcedFormat === 'dense_csv') {
-    const item = parseDense2DTable(trimmed, fileName || 'matrix_1', fileName || 'Matrix 1');
-    return item ? [item] : [];
+    return parseDense2DTables(trimmed, fileName || 'matrix_1', targetRows, targetCols);
   }
 
   // Auto-detection:
@@ -338,14 +422,15 @@ export function parseMatrixPayload(
       return parseSparseCoo(trimmed, targetRows, targetCols);
     }
 
-    // If first line has thousands of columns (e.g. 4200), it's flattened
-    if (firstLineParts.length >= 500) {
-      return parseFlattenedCsv(trimmed, targetRows, targetCols);
+    // If first line has many columns (e.g. flattened 1D row per matrix)
+    if (firstLineParts.length >= Math.min(targetRows * targetCols, 50)) {
+      const flattened = parseFlattenedCsv(trimmed, targetRows, targetCols);
+      if (flattened.length > 0) return flattened;
     }
 
-    // Otherwise, parse as 2D dense table
-    const dense = parseDense2DTable(trimmed, fileName || 'matrix_1', fileName || 'Matrix 1');
-    if (dense) return [dense];
+    // Otherwise, parse as 2D dense table(s)
+    const dense = parseDense2DTables(trimmed, fileName || 'matrix', targetRows, targetCols);
+    if (dense.length > 0) return dense;
   }
 
   return [];
