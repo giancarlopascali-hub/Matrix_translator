@@ -122,8 +122,23 @@ export class MatrixPCA {
     const N = matrices.length;
     const D = this.inputDim;
 
-    if (N < 2) {
+    if (N < 1) {
       return { numComponents: 0, explainedVarianceRatios: [], cumulativeVarianceRatios: [] };
+    }
+
+    if (N === 1) {
+      const mean = new Float64Array(D);
+      for (let j = 0; j < D; j++) mean[j] = matrices[0][j] || 0;
+      this.mean = mean;
+      this.components = [new Float64Array(D)];
+      this.zMin = [0];
+      this.zMax = [1];
+      this.explainedVarianceRatios = [1.0];
+      this.cumulativeVarianceRatios = [1.0];
+      this.totalVariance = 0;
+      this.fittedCount = 1;
+      this.isFitted = true;
+      return { numComponents: 1, explainedVarianceRatios: [1.0], cumulativeVarianceRatios: [1.0] };
     }
 
     // How many components we can realistically extract
@@ -503,16 +518,41 @@ export class MatrixPCA {
   // Basis serialisation / deserialisation
   // ─────────────────────────────────────────────────────────────────────────
 
-  public serializeBasis(): string | null {
-    if (!this.isFitted || !this.mean || !this.components) return null;
+  public serializeBasis(): string {
+    if (!this.mean || !this.components || this.components.length === 0) {
+      // If not fitted, generate a canonical basis for the active rows x cols
+      const D = this.inputDim;
+      const k = Math.min(this.k, D);
+      const mean = new Float64Array(D);
+      const components: Float64Array[] = [];
+      for (let i = 0; i < k; i++) {
+        const comp = new Float64Array(D);
+        if (i < D) comp[i] = 1.0;
+        components.push(comp);
+      }
+      const basis: PCABasis = {
+        rows: this.rows,
+        cols: this.cols,
+        k: components.length,
+        mean: Array.from(mean),
+        components: components.map(c => Array.from(c)),
+        zMin: new Array(components.length).fill(0),
+        zMax: new Array(components.length).fill(1),
+        explainedVarianceRatios: new Array(components.length).fill(1 / Math.max(1, components.length)),
+        totalVariance: 1.0,
+        fittedCount: 0,
+      };
+      return JSON.stringify(basis, null, 2);
+    }
+
     const basis: PCABasis = {
       rows: this.rows,
       cols: this.cols,
       k: this.components.length,
       mean: Array.from(this.mean),
       components: this.components.map(c => Array.from(c)),
-      zMin: this.zMin!,
-      zMax: this.zMax!,
+      zMin: this.zMin || new Array(this.components.length).fill(0),
+      zMax: this.zMax || new Array(this.components.length).fill(1),
       explainedVarianceRatios: this.explainedVarianceRatios || [],
       totalVariance: this.totalVariance || 0,
       fittedCount: this.fittedCount || 0,

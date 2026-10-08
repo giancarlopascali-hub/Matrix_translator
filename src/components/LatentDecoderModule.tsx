@@ -26,7 +26,8 @@ import {
   formatCombinedDenseCsv,
   formatSingleDenseCsv,
   formatFastaSequences,
-  formatFlattenedCsv
+  formatFlattenedCsv,
+  downloadBlob
 } from '../lib/matrixFormats';
 import { 
   SAMPLE_45X45_LATENT_CSV,
@@ -353,12 +354,7 @@ export const LatentDecoderModule: React.FC<LatentDecoderModuleProps> = ({
   const handleDownloadSingleFile = (m: ReconstructedMatrix) => {
     const { content, filename, mime } = getSingleMatrixFileContent(m);
     const blob = new Blob([content], { type: `${mime};charset=utf-8;` });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = filename;
-    link.click();
-    URL.revokeObjectURL(url);
+    downloadBlob(blob, filename);
   };
 
   // Download a collection of files as a ZIP (either ALL or SELECTED)
@@ -376,14 +372,10 @@ export const LatentDecoderModule: React.FC<LatentDecoderModuleProps> = ({
     }
 
     const zipBlob = await zip.generateAsync({ type: 'blob' });
-    const url = URL.createObjectURL(zipBlob);
-    const link = document.createElement('a');
-    link.href = url;
     const label = onlySelected ? `selected_${targetMatrices.length}` : `all_${targetMatrices.length}`;
     const modeTag = matrixValueType === 'binary_01' ? 'binary' : 'numeric';
-    link.download = `reconstructed_${modeTag}_matrices_${label}_files_${targetRows}x${targetCols}.zip`;
-    link.click();
-    URL.revokeObjectURL(url);
+    const filename = `reconstructed_${modeTag}_matrices_${label}_files_${targetRows}x${targetCols}.zip`;
+    downloadBlob(zipBlob, filename);
   };
 
   // Combined single CSV download option
@@ -392,13 +384,9 @@ export const LatentDecoderModule: React.FC<LatentDecoderModuleProps> = ({
     const list = targetMatrices.length > 0 ? targetMatrices : reconstructedMatrices;
     const content = formatCombinedDenseCsv(list, decimalPrecision);
     const blob = new Blob([content], { type: 'text/csv;charset=utf-8;' });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.href = url;
     const modeTag = matrixValueType === 'binary_01' ? 'binary' : 'numeric';
-    link.download = `combined_${modeTag}_matrices_${list.length}_files_${targetRows}x${targetCols}.csv`;
-    link.click();
-    URL.revokeObjectURL(url);
+    const filename = `combined_${modeTag}_matrices_${list.length}_files_${targetRows}x${targetCols}.csv`;
+    downloadBlob(blob, filename);
   };
 
   const selectedMatrix = reconstructedMatrices.find(m => m.id === selectedMatrixId) || reconstructedMatrices[0];

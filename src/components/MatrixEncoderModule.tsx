@@ -10,6 +10,7 @@ import { MatrixPCA } from '../lib/autoencoder';
 import { 
   parseMatrixPayload, 
   formatLatentCsv,
+  downloadBlob,
 } from '../lib/matrixFormats';
 import { 
   SAMPLE_45X45_BINARY_COO_CSV,
@@ -86,21 +87,30 @@ export const MatrixEncoderModule: React.FC<MatrixEncoderModuleProps> = ({
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [currentPage, setCurrentPage] = useState<number>(1);
   const pageSize = 25;
+  const [downloadedBasis, setDownloadedBasis] = useState<boolean>(false);
 
-  // Fit PCA basis on current matrices
-  const fitPcaOnItems = (items: MatrixItem[], currentK = targetK) => {
-    if (items.length < 2) {
-      // Just encode with whatever basis or identity
-      const encoded = items.map(m => ({
-        ...m,
-        latent: autoencoder.encode(m.data)
-      }));
-      setMatrices(encoded);
+  // Fit PCA basis on matrices with explicit dimension safety
+  const fitPcaOnItems = (
+    items: MatrixItem[], 
+    currentK = targetK,
+    r?: number,
+    c?: number
+  ) => {
+    const finalR = r ?? items[0]?.rows ?? targetRows;
+    const finalC = c ?? items[0]?.cols ?? targetCols;
+    const finalK = Math.max(2, Math.min(64, currentK));
+
+    setTargetRows(finalR);
+    setTargetCols(finalC);
+    setTargetK(finalK);
+
+    autoencoder.reconfigure(finalR, finalC, finalK);
+
+    if (items.length === 0) {
       setCalibrationInfo(null);
       return;
     }
 
-    autoencoder.reconfigure(targetRows, targetCols, currentK);
     const fitRes = autoencoder.fit(items.map(m => m.data));
     const roundTrip = autoencoder.roundTripMetrics(items.map(m => m.data), 0.5);
 
@@ -126,7 +136,7 @@ export const MatrixEncoderModule: React.FC<MatrixEncoderModuleProps> = ({
   // Calibrate button
   const handleCalibrateModel = () => {
     if (matrices.length === 0) return;
-    fitPcaOnItems(matrices, targetK);
+    fitPcaOnItems(matrices, targetK, targetRows, targetCols);
   };
 
   // Reset to default weights
@@ -184,7 +194,7 @@ export const MatrixEncoderModule: React.FC<MatrixEncoderModuleProps> = ({
     if (combinedAll.length >= 2) {
       setProgressStatus(`Fitting PCA basis to ${combinedAll.length} matrices...`);
       await new Promise(resolve => setTimeout(resolve, 10));
-      fitPcaOnItems(combinedAll, targetK);
+      fitPcaOnItems(combinedAll, targetK, activeR, activeC);
     } else {
       const itemsWithLatent = combinedAll.map(m => ({
         ...m,
@@ -322,21 +332,8 @@ export const MatrixEncoderModule: React.FC<MatrixEncoderModuleProps> = ({
       sCols = 10;
     }
 
-    setTargetRows(sRows);
-    setTargetCols(sCols);
-    autoencoder.reconfigure(sRows, sCols, targetK);
-
     const parsed = parseMatrixPayload(text, sampleName, sRows, sCols);
-    if (parsed.length >= 2) {
-      fitPcaOnItems(parsed, targetK);
-    } else {
-      const withLatent = parsed.map(item => ({
-        ...item,
-        latent: autoencoder.encode(item.data)
-      }));
-      setMatrices(withLatent);
-      if (withLatent.length > 0) setSelectedMatrixId(withLatent[0].id);
-    }
+    fitPcaOnItems(parsed, targetK, sRows, sCols);
   };
 
   // Filtered & Paginated matrices
@@ -370,27 +367,29 @@ export const MatrixEncoderModule: React.FC<MatrixEncoderModuleProps> = ({
 
   // Collective download action
   const handleDownloadCollectiveCsv = () => {
-    if (!latentCsvText) return;
+    if (!latentCsvText) {
+      alert('Please upload or load matrices first to extract latent vectors.');
+      return;
+    }
     const blob = new Blob([latentCsvText], { type: 'text/csv;charset=utf-8;' });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = `latent_vectors_${matrices.length}matrices_${targetRows}x${targetCols}_k${targetK}.csv`;
-    link.click();
-    URL.revokeObjectURL(url);
+    const filename = `latent_vectors_${matrices.length}matrices_${targetRows}x${targetCols}_k${targetK}.csv`;
+    downloadBlob(blob, filename);
   };
 
   // Export PCA Basis (JSON) action
   const handleDownloadBasisJson = () => {
+    // If matrices exist and basis isn't fitted for current dimensions, fit now
+    if (matrices.length > 0 && (!autoencoder.isFitted || autoencoder.rows !== targetRows || autoencoder.cols !== targetCols)) {
+      fitPcaOnItems(matrices, targetK, targetRows, targetCols);
+    }
+
     const serialized = autoencoder.serializeBasis();
-    if (!serialized) return;
     const blob = new Blob([serialized], { type: 'application/json;charset=utf-8;' });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = `pca_basis_${targetRows}x${targetCols}_k${targetK}.json`;
-    link.click();
-    URL.revokeObjectURL(url);
+    const filename = `pca_basis_${targetRows}x${targetCols}_k${targetK}.json`;
+    downloadBlob(blob, filename);
+
+    setDownloadedBasis(true);
+    setTimeout(() => setDownloadedBasis(false), 2500);
   };
 
   // Copy collective CSV to clipboard
@@ -592,11 +591,11 @@ export const MatrixEncoderModule: React.FC<MatrixEncoderModuleProps> = ({
             <div className="flex items-center gap-2">
               <button
                 onClick={handleDownloadBasisJson}
-                className="px-2.5 py-1 bg-white hover:bg-emerald-100 border border-emerald-300 text-emerald-900 rounded font-medium flex items-center gap-1 shadow-2xs"
+                className="px-2.5 py-1 bg-white hover:bg-emerald-100 border border-emerald-300 text-emerald-900 rounded font-medium flex items-center gap-1 shadow-2xs transition-all"
                 title="Download PCA basis JSON for offline/future decoding in Module 2"
               >
-                <FileCode className="w-3.5 h-3.5 text-emerald-700" />
-                Export Basis JSON
+                {downloadedBasis ? <Check className="w-3.5 h-3.5 text-emerald-700" /> : <FileCode className="w-3.5 h-3.5 text-emerald-700" />}
+                {downloadedBasis ? 'Basis Downloaded!' : 'Export Basis JSON'}
               </button>
               <button
                 onClick={handleCalibrateModel}
@@ -885,11 +884,15 @@ export const MatrixEncoderModule: React.FC<MatrixEncoderModuleProps> = ({
 
             <button
               onClick={handleDownloadBasisJson}
-              className="px-3.5 py-2 bg-slate-50 hover:bg-slate-100 border border-slate-200 text-slate-700 rounded-lg text-xs font-semibold shadow-2xs flex items-center gap-1.5 transition-colors"
+              className={`px-3.5 py-2 border rounded-lg text-xs font-semibold shadow-2xs flex items-center gap-1.5 transition-all ${
+                downloadedBasis
+                  ? 'bg-emerald-50 border-emerald-300 text-emerald-800'
+                  : 'bg-slate-50 hover:bg-slate-100 border-slate-200 text-slate-700'
+              }`}
               title="Download PCA basis JSON for offline or standalone Module 2 decoding"
             >
-              <FileCode className="w-4 h-4 text-emerald-600" />
-              Download Basis JSON
+              {downloadedBasis ? <Check className="w-4 h-4 text-emerald-600" /> : <FileCode className="w-4 h-4 text-emerald-600" />}
+              {downloadedBasis ? 'Basis Downloaded!' : 'Download Basis JSON'}
             </button>
 
             <button

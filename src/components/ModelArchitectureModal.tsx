@@ -3,6 +3,7 @@
  */
 import React, { useState } from 'react';
 import { MatrixPCA } from '../lib/autoencoder';
+import { downloadBlob } from '../lib/matrixFormats';
 import { X, Copy, Check, Download, Layers, Sparkles, Sliders, Database, Cpu } from 'lucide-react';
 
 interface ModelArchitectureModalProps {
@@ -29,12 +30,8 @@ export const ModelArchitectureModal: React.FC<ModelArchitectureModalProps> = ({
 
   const handleDownload = () => {
     const blob = new Blob([pythonScript], { type: 'text/x-python;charset=utf-8;' });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = `matrix_pca_${autoencoder.rows}x${autoencoder.cols}_k${autoencoder.k}_bo_pipeline.py`;
-    link.click();
-    URL.revokeObjectURL(url);
+    const filename = `matrix_pca_${autoencoder.rows}x${autoencoder.cols}_k${autoencoder.k}_bo_pipeline.py`;
+    downloadBlob(blob, filename);
   };
 
   return (

@@ -577,3 +577,24 @@ export function createMatrixItem(
     originalSequence
   };
 }
+
+/**
+ * Safely trigger a browser file download for a Blob
+ * Works reliably across all browsers (Chrome, Edge, Firefox, Safari)
+ */
+export function downloadBlob(blob: Blob, filename: string): void {
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = filename;
+  link.style.display = 'none';
+  document.body.appendChild(link);
+  link.click();
+  setTimeout(() => {
+    if (document.body.contains(link)) {
+      document.body.removeChild(link);
+    }
+    URL.revokeObjectURL(url);
+  }, 1000);
+}
+
