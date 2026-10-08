@@ -1,8 +1,8 @@
 /**
- * Matrix Latent Autoencoder Studio - Main Application (Bright Theme)
+ * Matrix PCA Studio - Main Application (Bright Theme)
  */
 import React, { useState } from 'react';
-import { defaultAutoencoder } from './lib/autoencoder';
+import { defaultPCA } from './lib/autoencoder';
 import { MatrixItem } from './lib/types';
 import { Header } from './components/Header';
 import { MatrixEncoderModule } from './components/MatrixEncoderModule';
@@ -41,14 +41,14 @@ export default function App() {
       <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 py-6">
         {activeTab === 'module1' && (
           <MatrixEncoderModule
-            autoencoder={defaultAutoencoder}
+            autoencoder={defaultPCA}
             onTransferToDecoder={handleTransferToDecoder}
           />
         )}
 
         {activeTab === 'module2' && (
           <LatentDecoderModule
-            autoencoder={defaultAutoencoder}
+            autoencoder={defaultPCA}
             initialLatentCsv={transferredLatentCsv}
             groundTruthMatrices={groundTruthMatrices}
             initialDimensions={transferredDimensions}
@@ -59,13 +59,13 @@ export default function App() {
           <div className="flex flex-col gap-10">
             <div className="border-b border-slate-200 pb-8">
               <MatrixEncoderModule
-                autoencoder={defaultAutoencoder}
+                autoencoder={defaultPCA}
                 onTransferToDecoder={handleTransferToDecoder}
               />
             </div>
             <div>
               <LatentDecoderModule
-                autoencoder={defaultAutoencoder}
+                autoencoder={defaultPCA}
                 initialLatentCsv={transferredLatentCsv}
                 groundTruthMatrices={groundTruthMatrices}
                 initialDimensions={transferredDimensions}
@@ -79,15 +79,15 @@ export default function App() {
       <ModelArchitectureModal
         isOpen={isModelModalOpen}
         onClose={() => setIsModelModalOpen(false)}
-        autoencoder={defaultAutoencoder}
+        autoencoder={defaultPCA}
       />
 
       {/* Footer (Bright Theme) */}
       <footer className="border-t border-slate-200 bg-white py-4 px-6 text-center text-xs text-slate-500 shadow-2xs">
         <div className="max-w-7xl mx-auto flex flex-col sm:flex-row items-center justify-between gap-2">
-          <span>Matrix Latent Autoencoder Studio · 8-Dimensional Bottleneck Pipeline for Any Matrix Size</span>
+          <span>Matrix PCA Studio · Subspace Bottleneck for Bayesian Optimization (BO)</span>
           <span className="text-slate-600 font-mono">
-            Active: {defaultAutoencoder.config.inputRows} × {defaultAutoencoder.config.inputCols} ({defaultAutoencoder.config.inputDim} features) → 8 Latent Dimensions
+            Active: {defaultPCA.rows} × {defaultPCA.cols} ({defaultPCA.inputDim} features) → {defaultPCA.k} Latent Dimensions [0, 1]^K
           </span>
         </div>
       </footer>

@@ -1,25 +1,25 @@
 /**
- * Matrix Latent Autoencoder Studio - Data Types
+ * Matrix PCA Studio - Data Types
  */
 
-export type MatrixValueType = 'continuous_numeric' | 'binary_01';
+export type MatrixValueType = 'binary_01' | 'continuous_numeric';
 
 export interface MatrixItem {
   id: string;
   name: string;
   rows: number;
   cols: number;
-  data: Float32Array; // Flattened rows * cols (any real numerical values or binary 0/1)
+  data: Float32Array;
   minVal: number;
   maxVal: number;
   isBinary: boolean;
   nonZeroCount: number;
   sparsityPercent: number;
-  latent?: number[]; // 8 latent dimensions [z0, ..., z7]
-  originalSequence?: string; // If imported from FASTA/amino acids
+  latent?: number[];          // Normalized [0,1]^K latent coordinates
+  originalSequence?: string;  // If imported from FASTA
 }
 
-export type InputFormatMode = 
+export type InputFormatMode =
   | 'auto'
   | 'dense_csv'
   | 'sparse_coo'
@@ -35,60 +35,68 @@ export type OutputFormatMode =
   | 'flattened_csv'
   | 'json';
 
-export type DiscretizationMode =
-  | 'threshold'   // p > threshold ? 1 : 0 (Binary mode)
-  | 'argmax'      // 1 at max column per row (categorical/one-hot)
-  | 'continuous'; // raw probabilities [0.0 - 1.0]
+export type DiscretizationMode = 'threshold' | 'argmax_categorical';
+
+export interface DecoderOptions {
+  threshold?: number;
+  discretizationMode?: DiscretizationMode;
+  valueType?: MatrixValueType;
+  decimalPrecision?: number;
+}
 
 export interface LatentRow {
   id: string;
-  z: number[]; // 8 dimensions
+  z: number[];          // Normalized [0,1]^K latent coordinates
   detectedRows?: number;
   detectedCols?: number;
+  detectedK?: number;
+  detectedValueType?: MatrixValueType;
   detectedMinVal?: number;
   detectedMaxVal?: number;
-  detectedValueType?: MatrixValueType;
+}
+
+/**
+ * Exported PCA basis — everything needed to decode latent vectors
+ * without re-fitting. Upload this JSON in Module 2 for standalone use.
+ */
+export interface PCABasis {
+  rows: number;
+  cols: number;
+  k: number;
+  mean: number[];             // D-dimensional mean vector
+  components: number[][];     // K × D orthonormal basis vectors
+  zMin: number[];             // K-dim raw projection lower bounds (for [0,1] normalisation)
+  zMax: number[];             // K-dim raw projection upper bounds
+  explainedVarianceRatios: number[];  // per-component explained variance fraction
+  totalVariance: number;
+  fittedCount: number;        // number of matrices used to fit
 }
 
 export interface ReconstructedMatrix {
   id: string;
   rows: number;
   cols: number;
-  data: Float32Array; // Reconstructed numerical values (real numbers or binary 0/1)
-  probabilities?: Float32Array; // Sigmoid outputs [0, 1] if in binary/prob mode
+  data: Float32Array;         // Final output (binary or continuous)
+  continuous: Float32Array;   // Pre-threshold continuous reconstruction
   valueType: MatrixValueType;
   minVal: number;
   maxVal: number;
   nonZeroCount: number;
   sparsityPercent: number;
-  decodedSequence?: string;
   groundTruth?: Float32Array;
   metrics?: {
-    accuracy?: number;
+    hammingAccuracy?: number;   // binary: fraction of cells correctly reconstructed
+    hammingDistance?: number;   // binary: number of differing cells
     precision?: number;
     recall?: number;
     f1?: number;
-    mae?: number;
-    rmse?: number;
+    mae?: number;               // continuous: mean absolute error
+    rmse?: number;              // continuous: root mean square error
   };
 }
 
-export interface AutoencoderConfig {
-  inputRows: number;   // default 200
-  inputCols: number;   // default 21
-  inputDim: number;    // rows * cols (default 4200)
-  latentDim: 8;        // fixed 8
-  hidden1: number;     // 512
-  hidden2: number;     // 128
-}
-
-export interface DecoderOptions {
-  matrixValueType: MatrixValueType; // 'continuous_numeric' | 'binary_01'
-  threshold: number;                // for binary_01 mode (default 0.5)
-  discretizationMode: DiscretizationMode;
-  continuousRangeMode: 'raw' | 'custom_range' | 'positive_only';
-  customMin: number;
-  customMax: number;
-  sparsityCutoff: number;           // zero out values if |val| < cutoff (0 = no cutoff)
-  decimalPrecision: number;         // 0 to 6
+export interface FitResult {
+  numComponents: number;
+  explainedVarianceRatios: number[];   // per-component fractions, sum ≤ 1
+  cumulativeVarianceRatios: number[];  // cumulative fractions
 }

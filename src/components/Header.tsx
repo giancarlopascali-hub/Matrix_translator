@@ -25,10 +25,10 @@ export const Header: React.FC<HeaderProps> = ({
           </div>
           <div>
             <h1 className="text-base font-bold text-slate-900 flex items-center gap-2">
-              Matrix Latent Autoencoder Studio
+              Matrix PCA Studio
             </h1>
             <p className="text-xs text-slate-500">
-              8-Dimensional Latent Compression &amp; Probability Threshold Reconstruction
+              Compact Subspace Representation for Bayesian Optimization &amp; Strict Threshold Reconstruction
             </p>
           </div>
         </div>
@@ -75,7 +75,7 @@ export const Header: React.FC<HeaderProps> = ({
             className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-50 hover:bg-slate-100 border border-slate-200 text-slate-700 hover:text-slate-900 rounded-lg text-xs font-medium transition-colors shadow-2xs"
           >
             <Cpu className="w-3.5 h-3.5 text-cyan-700" />
-            <span className="hidden sm:inline">Model</span> Architecture
+            <span className="hidden sm:inline">PCA &amp; BO</span> Pipeline
           </button>
         </div>
       </div>

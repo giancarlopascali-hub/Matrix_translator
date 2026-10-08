@@ -363,11 +363,10 @@ export function parseLatentCsv(text: string): LatentRow[] {
 
   let detectedRows: number | undefined;
   let detectedCols: number | undefined;
-  let detectedMinVal: number | undefined;
-  let detectedMaxVal: number | undefined;
-  let detectedValueType: 'continuous_numeric' | 'binary_01' | undefined;
+  let detectedK: number | undefined;
+  let detectedValueType: 'binary_01' | 'continuous_numeric' | undefined;
 
-  // Check comment lines for dimension hints and value range hints
+  // Parse comment-line metadata
   for (const line of lines) {
     if (line.startsWith('#')) {
       const dimMatch = line.match(/(?:dimensions|shape|size):\s*(\d+)\s*[xX,]\s*(\d+)/i);
@@ -375,15 +374,10 @@ export function parseLatentCsv(text: string): LatentRow[] {
         detectedRows = parseInt(dimMatch[1], 10);
         detectedCols = parseInt(dimMatch[2], 10);
       }
-      const rangeMatch = line.match(/value_range:\s*([\d\.\-]+)\s*,\s*([\d\.\-]+)/i);
-      if (rangeMatch) {
-        detectedMinVal = parseFloat(rangeMatch[1]);
-        detectedMaxVal = parseFloat(rangeMatch[2]);
-      }
-      const typeMatch = line.match(/value_type:\s*(continuous_numeric|binary_01)/i);
-      if (typeMatch) {
-        detectedValueType = typeMatch[1] as 'continuous_numeric' | 'binary_01';
-      }
+      const kMatch = line.match(/k:\s*(\d+)/i);
+      if (kMatch) detectedK = parseInt(kMatch[1], 10);
+      const vtMatch = line.match(/value_type:\s*(binary_01|continuous_numeric)/i);
+      if (vtMatch) detectedValueType = vtMatch[1] as 'binary_01' | 'continuous_numeric';
     }
   }
 
@@ -393,37 +387,26 @@ export function parseLatentCsv(text: string): LatentRow[] {
     const delim = line.includes('\t') ? '\t' : ',';
     const tokens = line.split(delim).map(t => t.trim());
 
-    // Check if line is header (e.g. "matrix_id,z1,z2,z3,z4,z5,z6,z7,z8")
-    if (tokens.some(t => isNaN(Number(t)) && !t.startsWith('matrix') && t.toLowerCase().includes('z'))) {
-      continue;
-    }
+    // Skip header lines — a true header has ALL tokens non-numeric
+    // (e.g. "matrix_id,z1,z2,..."). A data row always has numeric z values.
+    if (tokens.every(t => isNaN(Number(t)))) continue;
 
-    // Extract ID and numbers
-    let id = `latent_${++count}`;
-    let numbers: number[] = [];
+    // Determine which tokens are numbers
+    const numericStart = isNaN(Number(tokens[0])) ? 1 : 0;
+    let id = numericStart === 1 ? tokens[0] : `latent_${++count}`;
+    if (numericStart === 0) count++;
 
-    if (tokens.length >= 9 && isNaN(Number(tokens[0]))) {
-      id = tokens[0];
-      numbers = tokens.slice(1, 9).map(Number);
-    } else if (tokens.length >= 8) {
-      // Check if token[0] is number
-      if (!isNaN(Number(tokens[0]))) {
-        numbers = tokens.slice(0, 8).map(Number);
-      } else {
-        id = tokens[0];
-        numbers = tokens.slice(1, 9).map(Number);
-      }
-    }
+    const numbers = tokens.slice(numericStart).map(Number).filter(n => !isNaN(n));
 
-    if (numbers.length === 8 && numbers.every(n => !isNaN(n))) {
-      rows.push({ 
-        id, 
+    // Accept any K >= 2 (not just exactly 8)
+    if (numbers.length >= 2) {
+      rows.push({
+        id,
         z: numbers,
         detectedRows,
         detectedCols,
-        detectedMinVal,
-        detectedMaxVal,
-        detectedValueType
+        detectedK: numbers.length,
+        detectedValueType,
       });
     }
   }
@@ -435,24 +418,23 @@ export function parseLatentCsv(text: string): LatentRow[] {
  * Format latent vectors into CSV string ready for download
  */
 export function formatLatentCsv(
-  items: { id: string; latent: number[] }[], 
-  includeIdHeader: boolean = true,
-  metadata?: { rows: number; cols: number; minVal?: number; maxVal?: number; isBinary?: boolean }
+  items: { id: string; latent: number[] }[],
+  includeIdHeader = true,
+  metadata?: { rows: number; cols: number; k?: number; valueType?: 'binary_01' | 'continuous_numeric' }
 ): string {
-  let header = '';
+  const K = items[0]?.latent?.length ?? 8;
+  let header = '# Matrix PCA Latent Vectors — normalized [0,1] per component\n';
   if (metadata) {
     header += `# dimensions: ${metadata.rows}x${metadata.cols}\n`;
-    if (metadata.minVal !== undefined && metadata.maxVal !== undefined) {
-      header += `# value_range: ${metadata.minVal.toFixed(2)},${metadata.maxVal.toFixed(2)}\n`;
-    }
-    if (metadata.isBinary !== undefined) {
-      header += `# value_type: ${metadata.isBinary ? 'binary_01' : 'continuous_numeric'}\n`;
-    }
+    header += `# k: ${metadata.k ?? K}\n`;
+    if (metadata.valueType) header += `# value_type: ${metadata.valueType}\n`;
   }
-  header += includeIdHeader ? 'matrix_id,z1,z2,z3,z4,z5,z6,z7,z8\n' : 'z1,z2,z3,z4,z5,z6,z7,z8\n';
+  header += '# z values are normalized to [0,1] — use the pca_basis.json for decoding\n';
+  const colNames = Array.from({ length: K }, (_, i) => `z${i + 1}`).join(',');
+  header += includeIdHeader ? `matrix_id,${colNames}\n` : `${colNames}\n`;
+
   const rows = items.map(item => {
     const zFormatted = item.latent.map(v => {
-      // Format with up to 8 decimal figures without losing precision
       const rounded = Number(v.toFixed(8));
       return isNaN(rounded) ? '0' : rounded.toString();
     }).join(',');

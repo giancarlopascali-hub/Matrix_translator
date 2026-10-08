@@ -1,14 +1,14 @@
 /**
- * Model Architecture Modal & Python/Keras Script Generator (Bright Theme)
+ * Model Architecture Modal & Python BO Pipeline Generator (Bright Theme)
  */
 import React, { useState } from 'react';
-import { MatrixAutoencoder } from '../lib/autoencoder';
-import { X, Copy, Check, Download, Layers } from 'lucide-react';
+import { MatrixPCA } from '../lib/autoencoder';
+import { X, Copy, Check, Download, Layers, Sparkles, Sliders, Database, Cpu } from 'lucide-react';
 
 interface ModelArchitectureModalProps {
   isOpen: boolean;
   onClose: () => void;
-  autoencoder: MatrixAutoencoder;
+  autoencoder: MatrixPCA;
 }
 
 export const ModelArchitectureModal: React.FC<ModelArchitectureModalProps> = ({
@@ -17,22 +17,22 @@ export const ModelArchitectureModal: React.FC<ModelArchitectureModalProps> = ({
   autoencoder,
 }) => {
   const [copied, setCopied] = useState(false);
-  const kerasScript = autoencoder.generateKerasScript();
+  const pythonScript = autoencoder.generatePythonScript(0.5);
 
   if (!isOpen) return null;
 
   const handleCopy = () => {
-    navigator.clipboard.writeText(kerasScript);
+    navigator.clipboard.writeText(pythonScript);
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
   };
 
   const handleDownload = () => {
-    const blob = new Blob([kerasScript], { type: 'text/x-python;charset=utf-8;' });
+    const blob = new Blob([pythonScript], { type: 'text/x-python;charset=utf-8;' });
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.href = url;
-    link.download = 'matrix_autoencoder_8d.py';
+    link.download = `matrix_pca_${autoencoder.rows}x${autoencoder.cols}_k${autoencoder.k}_bo_pipeline.py`;
     link.click();
     URL.revokeObjectURL(url);
   };
@@ -43,10 +43,15 @@ export const ModelArchitectureModal: React.FC<ModelArchitectureModalProps> = ({
         {/* Header */}
         <div className="flex items-center justify-between px-6 py-4 border-b border-slate-200 bg-slate-50">
           <div className="flex items-center gap-2">
-            <Layers className="w-5 h-5 text-cyan-700" />
-            <h2 className="text-base font-bold text-slate-900">
-              8-Latent Autoencoder Architecture &amp; Python Keras Model
-            </h2>
+            <Cpu className="w-5 h-5 text-cyan-700" />
+            <div>
+              <h2 className="text-base font-bold text-slate-900">
+                Matrix PCA Architecture &amp; Bayesian Optimization Pipeline
+              </h2>
+              <p className="text-xs text-slate-500">
+                Linear Subspace Compression into [0, 1]^K Bounds for EDOS-Family Bayesian Optimizers
+              </p>
+            </div>
           </div>
           <button
             onClick={onClose}
@@ -61,94 +66,72 @@ export const ModelArchitectureModal: React.FC<ModelArchitectureModalProps> = ({
           {/* Architecture diagram */}
           <div>
             <h3 className="text-xs font-bold uppercase tracking-wider text-slate-500 mb-3">
-              Neural Topology Flow
+              Mathematical Pipeline Flow
             </h3>
-            <div className="grid grid-cols-1 md:grid-cols-7 gap-2 items-center text-center font-mono text-xs">
-              <div className="p-3 bg-slate-50 border border-slate-200 rounded-lg">
-                <div className="text-slate-500 text-[10px]">Input Layer</div>
-                <div className="font-bold text-cyan-800 text-sm mt-1">{autoencoder.config.inputDim}</div>
-                <div className="text-[10px] text-slate-400 mt-0.5">{autoencoder.config.inputRows} × {autoencoder.config.inputCols} matrix</div>
+            <div className="grid grid-cols-1 md:grid-cols-5 gap-3 items-center text-center font-mono text-xs">
+              <div className="p-3 bg-slate-50 border border-slate-200 rounded-lg shadow-2xs">
+                <div className="text-slate-500 text-[10px] font-sans">Input Matrix</div>
+                <div className="font-bold text-cyan-800 text-sm mt-1">{autoencoder.inputDim} cells</div>
+                <div className="text-[10px] text-slate-400 mt-0.5">{autoencoder.rows} × {autoencoder.cols} matrix</div>
               </div>
 
               <div className="text-slate-400 font-bold hidden md:block">→</div>
 
-              <div className="p-3 bg-slate-50 border border-slate-200 rounded-lg">
-                <div className="text-slate-500 text-[10px]">Enc Hidden 1</div>
-                <div className="font-bold text-slate-700 text-sm mt-1">{autoencoder.config.hidden1}</div>
-                <div className="text-[10px] text-slate-400 mt-0.5">ReLU</div>
-              </div>
-
-              <div className="text-slate-400 font-bold hidden md:block">→</div>
-
-              <div className="p-3 bg-slate-50 border border-slate-200 rounded-lg">
-                <div className="text-slate-500 text-[10px]">Enc Hidden 2</div>
-                <div className="font-bold text-slate-700 text-sm mt-1">{autoencoder.config.hidden2}</div>
-                <div className="text-[10px] text-slate-400 mt-0.5">ReLU</div>
-              </div>
-
-              <div className="text-slate-400 font-bold hidden md:block">→</div>
-
-              {/* Bottleneck 8 */}
+              {/* PCA Subspace */}
               <div className="p-3 bg-cyan-50 border-2 border-cyan-600 rounded-lg shadow-xs">
-                <div className="text-cyan-800 font-bold text-[10px]">Bottleneck</div>
-                <div className="font-extrabold text-cyan-900 text-base mt-1">8 Latent</div>
-                <div className="text-[10px] text-cyan-700 font-semibold mt-0.5">[z1 .. z8]</div>
-              </div>
-            </div>
-
-            <div className="grid grid-cols-1 md:grid-cols-7 gap-2 items-center text-center font-mono text-xs mt-3">
-              <div className="p-3 bg-cyan-50 border-2 border-cyan-600 rounded-lg">
-                <div className="text-cyan-800 font-bold text-[10px]">Bottleneck</div>
-                <div className="font-extrabold text-cyan-900 text-base mt-1">8 Latent</div>
-                <div className="text-[10px] text-cyan-700 font-semibold mt-0.5">Decoder Input</div>
+                <div className="text-cyan-800 font-bold text-[10px] font-sans">Latent Space (BO)</div>
+                <div className="font-extrabold text-cyan-900 text-base mt-1">K = {autoencoder.k}</div>
+                <div className="text-[10px] text-cyan-700 font-semibold mt-0.5">[z₁ .. z_K] ∈ [0, 1]^K</div>
               </div>
 
               <div className="text-slate-400 font-bold hidden md:block">→</div>
 
-              <div className="p-3 bg-slate-50 border border-slate-200 rounded-lg">
-                <div className="text-slate-500 text-[10px]">Dec Hidden 1</div>
-                <div className="font-bold text-slate-700 text-sm mt-1">{autoencoder.config.hidden2}</div>
-                <div className="text-[10px] text-slate-400 mt-0.5">ReLU</div>
-              </div>
-
-              <div className="text-slate-400 font-bold hidden md:block">→</div>
-
-              <div className="p-3 bg-slate-50 border border-slate-200 rounded-lg">
-                <div className="text-slate-500 text-[10px]">Dec Hidden 2</div>
-                <div className="font-bold text-slate-700 text-sm mt-1">{autoencoder.config.hidden1}</div>
-                <div className="text-[10px] text-slate-400 mt-0.5">ReLU</div>
-              </div>
-
-              <div className="text-slate-400 font-bold hidden md:block">→</div>
-
-              <div className="p-3 bg-emerald-50 border border-emerald-500 rounded-lg">
-                <div className="text-emerald-800 text-[10px]">Sigmoid Output</div>
-                <div className="font-bold text-emerald-800 text-sm mt-1">{autoencoder.config.inputDim}</div>
-                <div className="text-[10px] text-emerald-600 mt-0.5">Reconstruct &amp; Threshold</div>
+              {/* Reconstruction */}
+              <div className="p-3 bg-emerald-50 border border-emerald-500 rounded-lg shadow-2xs">
+                <div className="text-emerald-800 text-[10px] font-sans">Strict Threshold Decoder</div>
+                <div className="font-bold text-emerald-800 text-sm mt-1">{autoencoder.inputDim} cells</div>
+                <div className="text-[10px] text-emerald-600 mt-0.5">value &gt; threshold ? 1 : 0</div>
               </div>
             </div>
           </div>
 
-          {/* Details & Discretization notes */}
-          <div className="bg-slate-50 p-4 border border-slate-200 rounded-lg text-xs space-y-2 text-slate-700 leading-relaxed">
-            <h4 className="font-bold text-slate-900">Reconstruction with Probability Thresholding</h4>
-            <p>
-              The decoder output layer uses a <code className="text-cyan-800 font-semibold bg-white px-1.5 py-0.5 rounded border border-slate-200">sigmoid</code> activation producing continuous values in range <code className="text-cyan-800 font-semibold bg-white px-1.5 py-0.5 rounded border border-slate-200">[0.0, 1.0]</code>. These represent probabilities that an entry is active (or amino acid present).
-            </p>
-            <p>
-              In Module 2, the user-defined threshold $\theta$ converts these probabilities back to discrete matrix entries:
-              <br />
-              <code className="text-amber-800 bg-white px-2 py-0.5 rounded border border-slate-200 font-mono font-semibold">
-                reconstructed_value = probability &gt; threshold ? 1 : 0
+          {/* Details & BO explanation */}
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-xs text-slate-700">
+            <div className="bg-slate-50 p-4 border border-slate-200 rounded-lg space-y-2">
+              <h4 className="font-bold text-slate-900 flex items-center gap-1.5">
+                <Sparkles className="w-4 h-4 text-cyan-700" />
+                Why PCA for Bayesian Optimization?
+              </h4>
+              <p className="leading-relaxed">
+                Rather than treating all <strong>{autoencoder.inputDim}</strong> matrix entries independently, PCA extracts the <strong>{autoencoder.k}</strong> dominant orthogonal eigenvectors.
+              </p>
+              <p className="leading-relaxed">
+                Each projection is normalized to the unit hypercube <strong>[0, 1]^K</strong>, which matches the standard parameter bounds expected by <strong>EDOS</strong> and Gaussian Process Bayesian Optimizers.
+              </p>
+            </div>
+
+            <div className="bg-slate-50 p-4 border border-slate-200 rounded-lg space-y-2">
+              <h4 className="font-bold text-slate-900 flex items-center gap-1.5">
+                <Sliders className="w-4 h-4 text-emerald-700" />
+                Reconstruction &amp; Strictly &apos;&gt;&apos; Threshold
+              </h4>
+              <p className="leading-relaxed">
+                The continuous reconstruction from coordinates <code>z</code> is obtained via the inverse PCA transform:
+              </p>
+              <code className="block bg-white p-2 rounded border border-slate-200 font-mono text-[11px] text-slate-800">
+                x_recon = mean + sum(z_raw_k * component_k)
               </code>
-            </p>
+              <p className="leading-relaxed text-slate-600">
+                For binary matrices, cells are mapped using the strict inequality: <code>value &gt; threshold ? 1 : 0</code> (default θ = 0.50).
+              </p>
+            </div>
           </div>
 
-          {/* Python Keras code section */}
+          {/* Python code section */}
           <div>
             <div className="flex items-center justify-between mb-2">
               <h3 className="text-xs font-bold uppercase tracking-wider text-slate-500">
-                Executable Python / TensorFlow Keras Code
+                Python / Scikit-Learn Script for BO Integration
               </h3>
               <div className="flex items-center gap-2">
                 <button
@@ -168,7 +151,7 @@ export const ModelArchitectureModal: React.FC<ModelArchitectureModalProps> = ({
               </div>
             </div>
             <pre className="p-4 bg-slate-900 border border-slate-800 rounded-lg text-xs font-mono text-slate-200 overflow-x-auto max-h-72">
-              <code>{kerasScript}</code>
+              <code>{pythonScript}</code>
             </pre>
           </div>
         </div>
