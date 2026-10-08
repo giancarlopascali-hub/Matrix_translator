@@ -39,7 +39,9 @@ function countDifferences(left: Float32Array, right: Float32Array): number {
 const training = binaryMatrices(6, 64);
 const model = new MatrixPCA(8, 8, 16);
 const fit = model.fit(training);
-assert(fit.numComponents <= training.length - 1, 'PCA exported unsupported filler dimensions.');
+assert(fit.numComponents === 16, 'Encoder did not preserve the requested K=16 vector length.');
+assert(fit.dataComponentCount <= training.length - 1, 'PCA reported more data-informed dimensions than the sample rank supports.');
+assert(fit.completionComponentCount === 16 - fit.dataComponentCount, 'Fixed-length completion count is inconsistent.');
 assert(model.hasDecodingBasis, 'Fitted model was not marked as a decoding basis.');
 
 const metrics = model.roundTripMetrics(training);
@@ -75,7 +77,8 @@ for (let i = 0; i < training.length; i++) {
 const training45 = binaryMatrices(5, 45 * 45, 0.2);
 const model45 = new MatrixPCA(45, 45, 16);
 const fit45 = model45.fit(training45);
-assert(fit45.numComponents <= 4, '45×45 training data was padded beyond its supported rank.');
+assert(fit45.numComponents === 16, '45×45 encoder did not return the requested K=16 values.');
+assert(fit45.dataComponentCount <= 4, '45×45 data-informed rank exceeds N-1.');
 const imported45 = new MatrixPCA(1, 1, 1);
 assert(imported45.loadBasis(model45.serializeBasis()), imported45.lastError || '45×45 basis did not reload.');
 for (let i = 0; i < training45.length; i++) {
@@ -86,7 +89,9 @@ for (let i = 0; i < training45.length; i++) {
 const singleModel = new MatrixPCA(8, 8, 16);
 const singleFit = singleModel.fit([training[0]]);
 assert(singleFit.usedSyntheticAnchor, 'One-matrix fit did not use the hidden bootstrap anchor.');
-assert(singleFit.numComponents === 1, 'One matrix plus one anchor should produce one active component.');
+assert(singleFit.numComponents === 16, 'Single-matrix encoding did not preserve requested K=16.');
+assert(singleFit.dataComponentCount === 1 && singleFit.completionComponentCount === 15, 'Single-matrix fixed-length basis composition is incorrect.');
+assert(singleModel.encode(training[0]).length === 16, 'Single-matrix latent vector does not contain K=16 values.');
 assert(singleModel.fittedCount === 1, 'Synthetic anchor was counted as an uploaded matrix.');
 assert(countDifferences(training[0], singleModel.decodeBinary(singleModel.encode(training[0]))) === 0, 'Single binary matrix did not round-trip exactly.');
 const singleBasis = JSON.parse(singleModel.serializeBasis());
@@ -121,7 +126,31 @@ assertThrows(() => imported.decode(new Array(imported.k).fill(1.1)), 'inside [0,
 
 const lowRankModel = new MatrixPCA(8, 8, 16);
 const lowRankFit = lowRankModel.fit(training.slice(0, 3));
-assert(lowRankFit.numComponents <= 2, 'Low-rank data was padded with arbitrary dimensions.');
+assert(lowRankFit.numComponents === 16, 'Low-rank data did not retain the requested fixed K.');
+assert(lowRankFit.dataComponentCount <= 2, 'Low-rank data reported too many learned components.');
+
+const fixedEightModel = new MatrixPCA(45, 45, 8);
+const fixedEightFit = fixedEightModel.fit(training45.slice(0, 2));
+assert(fixedEightFit.numComponents === 8, 'Requested K=8 did not produce eight basis components.');
+assert(fixedEightModel.encode(training45[0]).length === 8, 'Requested K=8 did not produce eight latent values.');
+const fixedEightBasis = JSON.parse(fixedEightModel.serializeBasis());
+assert(fixedEightBasis.k === 8 && fixedEightBasis.components.length === 8, 'K=8 basis JSON has the wrong component count.');
+assert(fixedEightBasis.dataComponentCount === fixedEightFit.dataComponentCount, 'Basis JSON lost the data/completion dimension boundary.');
+for (let k = 0; k < fixedEightBasis.components.length; k++) {
+  const component = fixedEightBasis.components[k] as number[];
+  const norm = Math.sqrt(component.reduce((sum, value) => sum + value * value, 0));
+  assert(Math.abs(norm - 1) < 1e-8, `K=8 basis component ${k + 1} is not normalized.`);
+  for (let previous = 0; previous < k; previous++) {
+    const dot = component.reduce(
+      (sum, value, index) => sum + value * fixedEightBasis.components[previous][index],
+      0,
+    );
+    assert(Math.abs(dot) < 1e-8, `K=8 basis components ${previous + 1} and ${k + 1} are not orthogonal.`);
+  }
+}
+const fixedEightImported = new MatrixPCA(1, 1, 1);
+assert(fixedEightImported.loadBasis(JSON.stringify(fixedEightBasis)), fixedEightImported.lastError || 'K=8 basis did not reload.');
+assert(countDifferences(training45[0], fixedEightImported.decodeBinary(fixedEightModel.encode(training45[0]))) === 0, 'K=8 basis/latent pair changed its source matrix.');
 
 const lossyModel = new MatrixPCA(8, 8, 2);
 const lossyTraining = binaryMatrices(20, 64);

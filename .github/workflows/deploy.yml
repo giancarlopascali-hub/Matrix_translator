@@ -27,16 +27,22 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Setup Bun
-        uses: oven-sh/setup-bun@v2
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
         with:
-          bun-version: latest
+          node-version: '22'
 
       - name: Install dependencies
-        run: bun install --frozen-lockfile
+        run: npm install --no-audit --no-fund
+
+      - name: Type-check application
+        run: npm run lint
+
+      - name: Test matrix round trips
+        run: npm test
 
       - name: Build static website
-        run: bun run build
+        run: npm run build
 
       - name: Setup Pages
         uses: actions/configure-pages@v5

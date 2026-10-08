@@ -4,13 +4,14 @@
 import React, { useState } from 'react';
 import { defaultPCA } from './lib/autoencoder';
 import { MatrixItem } from './lib/types';
-import { Header } from './components/Header';
+import { Header, AppTab } from './components/Header';
 import { MatrixEncoderModule } from './components/MatrixEncoderModule';
 import { LatentDecoderModule } from './components/LatentDecoderModule';
 import { ModelArchitectureModal } from './components/ModelArchitectureModal';
+import { QuickGuide } from './components/QuickGuide';
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState<'module1' | 'module2' | 'split'>('module1');
+  const [activeTab, setActiveTab] = useState<AppTab>('module1');
   const [isModelModalOpen, setIsModelModalOpen] = useState(false);
   const [transferredLatentCsv, setTransferredLatentCsv] = useState<string>('');
   const [groundTruthMatrices, setGroundTruthMatrices] = useState<MatrixItem[]>([]);
@@ -39,6 +40,13 @@ export default function App() {
 
       {/* Main Body */}
       <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 py-6">
+        {activeTab === 'guide' && (
+          <QuickGuide
+            onOpenEncoder={() => setActiveTab('module1')}
+            onOpenDecoder={() => setActiveTab('module2')}
+          />
+        )}
+
         {activeTab === 'module1' && (
           <MatrixEncoderModule
             autoencoder={defaultPCA}

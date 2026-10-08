@@ -53,6 +53,7 @@ export class MatrixPCA {
   public totalVariance?: number;
   public fittedCount?: number;
   public usedSyntheticAnchor = false;
+  public dataComponentCount = 0;
   public modelId?: string;
   public valueType: MatrixValueType = 'binary_01';
   public modelSource: ModelSource = 'preview';
@@ -222,6 +223,7 @@ export class MatrixPCA {
     this.modelId = undefined;
     this.valueType = 'binary_01';
     this.usedSyntheticAnchor = false;
+    this.dataComponentCount = 0;
     this.lastError = undefined;
     this.fittedCount = 0;
     this.totalVariance = 1.0;
@@ -269,7 +271,7 @@ export class MatrixPCA {
   }
 
   // ─────────────────────────────────────────────────────────────────────────
-  // Fit — PCA using only data-supported, non-zero-variance components
+  // Fit — data-supported PCA followed by deterministic orthogonal completion
   // ─────────────────────────────────────────────────────────────────────────
 
   private createSyntheticAnchor(matrix: Float32Array, valueType: MatrixValueType): Float32Array {
@@ -300,6 +302,59 @@ export class MatrixPCA {
     return anchor;
   }
 
+  private orthonormalizeCandidate(
+    candidate: Float64Array,
+    basis: Float64Array[],
+  ): Float64Array | null {
+    const value = new Float64Array(candidate);
+
+    // Two modified Gram-Schmidt passes keep the completed basis stable even
+    // when a candidate is nearly aligned with the data-supported subspace.
+    for (let pass = 0; pass < 2; pass++) {
+      for (const existing of basis) {
+        let dot = 0;
+        for (let d = 0; d < value.length; d++) dot += value[d] * existing[d];
+        for (let d = 0; d < value.length; d++) value[d] -= dot * existing[d];
+      }
+    }
+
+    let normSq = 0;
+    for (let d = 0; d < value.length; d++) normSq += value[d] * value[d];
+    const norm = Math.sqrt(normSq);
+    if (norm <= 1e-8) return null;
+    for (let d = 0; d < value.length; d++) value[d] /= norm;
+    return value;
+  }
+
+  private completeOrthonormalBasis(components: Float64Array[], targetK: number): void {
+    if (components.length >= targetK) return;
+    const D = this.inputDim;
+
+    const dctCandidates = this.generateDctPool(
+      this.rows,
+      this.cols,
+      Math.min(D, Math.max(64, targetK * 4)),
+    );
+    for (const candidate of dctCandidates) {
+      if (components.length >= targetK) break;
+      const completed = this.orthonormalizeCandidate(candidate, components);
+      if (completed) components.push(completed);
+    }
+
+    // Coordinate vectors guarantee completion if the low-frequency DCT pool
+    // happened to lie inside the learned subspace.
+    for (let index = 0; index < D && components.length < targetK; index++) {
+      const candidate = new Float64Array(D);
+      candidate[index] = 1;
+      const completed = this.orthonormalizeCandidate(candidate, components);
+      if (completed) components.push(completed);
+    }
+
+    if (components.length !== targetK) {
+      throw new Error(`Could not construct the requested K=${targetK} orthonormal basis.`);
+    }
+  }
+
   public fit(matrices: Float32Array[]): FitResult {
     const realCount = matrices.length;
     const D = this.inputDim;
@@ -310,6 +365,7 @@ export class MatrixPCA {
     this.modelSource = 'preview';
     this.modelId = undefined;
     this.usedSyntheticAnchor = false;
+    this.dataComponentCount = 0;
 
     if (realCount < 1) {
       throw new Error('At least one matrix is required to learn a BO latent representation.');
@@ -452,12 +508,9 @@ export class MatrixPCA {
         for (let d = 0; d < D; d++) p[d] += coeff * ci[d];
       }
 
-      let pNorm = 0;
-      for (let d = 0; d < D; d++) pNorm += p[d] * p[d];
-      pNorm = Math.sqrt(pNorm);
-      if (pNorm > 1e-10) {
-        for (let d = 0; d < D; d++) p[d] /= pNorm;
-        components.push(p);
+      const orthonormal = this.orthonormalizeCandidate(p, components);
+      if (orthonormal) {
+        components.push(orthonormal);
         compVars.push(lambda / N);
       }
     }
@@ -466,8 +519,13 @@ export class MatrixPCA {
       throw new Error('The uploaded matrices contain no measurable variation, so a BO latent representation cannot be fitted.');
     }
 
-    // Projection bounds are the observed training bounds. Padding would expose
-    // BO dimensions that have never been represented by the fitted data.
+    const dataComponentCount = components.length;
+    this.completeOrthonormalBasis(components, requestedK);
+    while (compVars.length < components.length) compVars.push(0);
+
+    // Learned dimensions use their observed projection bounds. Deterministic
+    // completion dimensions use valid domain bounds so every requested BO
+    // coordinate is decodable without changing fitted-sample round trips.
     const zMin = new Array<number>(components.length).fill(Infinity);
     const zMax = new Array<number>(components.length).fill(-Infinity);
     for (const centered of C) {
@@ -478,14 +536,34 @@ export class MatrixPCA {
         zMax[k] = Math.max(zMax[k], projection);
       }
     }
-    for (let k = 0; k < components.length; k++) {
+    for (let k = 0; k < dataComponentCount; k++) {
       if (zMax[k] - zMin[k] <= 1e-10) {
         throw new Error(`PCA component ${k + 1} has zero usable range.`);
       }
     }
 
-    // Store only the empirically supported components. In particular, do not
-    // pad a low-rank data set with arbitrary DCT dimensions.
+    const binaryBounds = fittedValueType === 'binary_01'
+      ? this.computeBinaryBounds(components, mean)
+      : undefined;
+    let continuousCompletionScale = Math.max(1e-3, Math.sqrt(totalVar));
+    for (let k = 0; k < dataComponentCount; k++) {
+      continuousCompletionScale = Math.max(
+        continuousCompletionScale,
+        (zMax[k] - zMin[k]) / 2,
+      );
+    }
+    for (let k = dataComponentCount; k < components.length; k++) {
+      if (binaryBounds) {
+        zMin[k] = binaryBounds.zMin[k];
+        zMax[k] = binaryBounds.zMax[k];
+      } else {
+        zMin[k] = -continuousCompletionScale;
+        zMax[k] = continuousCompletionScale;
+      }
+    }
+
+    // The exported vector is always exactly requestedK long. Completion
+    // components are deterministic, orthogonal, and explicitly reported.
     this.mean = mean;
     this.components = components;
     this.zMin = zMin;
@@ -494,6 +572,7 @@ export class MatrixPCA {
     this.totalVariance = totalVar;
     this.fittedCount = realCount;
     this.usedSyntheticAnchor = usedSyntheticAnchor;
+    this.dataComponentCount = dataComponentCount;
     this.isFitted = true;
     this.modelSource = 'trained';
     this.valueType = fittedValueType;
@@ -516,8 +595,10 @@ export class MatrixPCA {
     return {
       numComponents: components.length,
       requestedComponents: requestedK,
-      effectiveRank: components.length,
+      effectiveRank: dataComponentCount,
       usedSyntheticAnchor,
+      dataComponentCount,
+      completionComponentCount: components.length - dataComponentCount,
       explainedVarianceRatios,
       cumulativeVarianceRatios,
     };
@@ -817,6 +898,7 @@ export class MatrixPCA {
       totalVariance: this.totalVariance || 0,
       fittedCount: this.fittedCount || 0,
       syntheticAnchorUsed: this.usedSyntheticAnchor,
+      dataComponentCount: this.dataComponentCount,
     };
     return JSON.stringify(basis, null, 2);
   }
@@ -863,6 +945,13 @@ export class MatrixPCA {
         if (Math.abs(Math.sqrt(normSq) - 1) > 1e-4) {
           return fail(`Basis component ${k + 1} is not normalized.`);
         }
+        for (let previous = 0; previous < k; previous++) {
+          let dot = 0;
+          for (let d = 0; d < D; d++) dot += component[d] * b.components[previous][d];
+          if (Math.abs(dot) > 1e-4) {
+            return fail(`Basis components ${previous + 1} and ${k + 1} are not orthogonal.`);
+          }
+        }
       }
       if (!Array.isArray(b.zMin) || !Array.isArray(b.zMax) || b.zMin.length !== b.k || b.zMax.length !== b.k) {
         return fail(`Basis projection bounds must contain exactly K=${b.k} values.`);
@@ -902,6 +991,10 @@ export class MatrixPCA {
       this.totalVariance = Number.isFinite(b.totalVariance) ? b.totalVariance : 0;
       this.fittedCount = Number.isInteger(b.fittedCount) && b.fittedCount >= 0 ? b.fittedCount : 0;
       this.usedSyntheticAnchor = b.syntheticAnchorUsed === true;
+      this.dataComponentCount = Number.isInteger(b.dataComponentCount) &&
+        b.dataComponentCount! >= 0 && b.dataComponentCount! <= b.k
+        ? b.dataComponentCount!
+        : b.k;
       this.isFitted = true;
       this.modelSource = 'imported';
       this.modelId = computedModelId;

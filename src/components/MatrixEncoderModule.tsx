@@ -79,9 +79,10 @@ export const MatrixEncoderModule: React.FC<MatrixEncoderModuleProps> = ({
     exactMatchRate: number;
     balancedAccuracy: number;
     recall: number;
-    requestedK: number;
     effectiveK: number;
     usedSyntheticAnchor: boolean;
+    dataComponentCount: number;
+    completionComponentCount: number;
   } | null>(null);
 
   // Dynamic matrix dimensions configuration
@@ -105,7 +106,7 @@ export const MatrixEncoderModule: React.FC<MatrixEncoderModuleProps> = ({
   ) => {
     const finalR = r ?? items[0]?.rows ?? targetRows;
     const finalC = c ?? items[0]?.cols ?? targetCols;
-    const finalK = Math.max(2, Math.min(64, currentK));
+    const finalK = Math.max(1, Math.min(64, currentK, finalR * finalC));
 
     setTargetRows(finalR);
     setTargetCols(finalC);
@@ -137,9 +138,10 @@ export const MatrixEncoderModule: React.FC<MatrixEncoderModuleProps> = ({
         exactMatchRate: roundTrip.exactMatchRate,
         balancedAccuracy: roundTrip.balancedAccuracy,
         recall: roundTrip.recall,
-        requestedK: finalK,
         effectiveK: fitRes.numComponents,
         usedSyntheticAnchor: fitRes.usedSyntheticAnchor,
+        dataComponentCount: fitRes.dataComponentCount,
+        completionComponentCount: fitRes.completionComponentCount,
       });
       setFitError(null);
 
@@ -208,7 +210,7 @@ export const MatrixEncoderModule: React.FC<MatrixEncoderModuleProps> = ({
   const handleUpdateDimensions = (r: number, c: number, kVal = targetK) => {
     const validR = Math.max(1, Math.min(2000, r));
     const validC = Math.max(1, Math.min(2000, c));
-    const validK = Math.max(2, Math.min(64, kVal));
+    const validK = Math.max(1, Math.min(64, kVal, validR * validC));
     setTargetRows(validR);
     setTargetCols(validC);
     setTargetK(validK);
@@ -662,10 +664,7 @@ export const MatrixEncoderModule: React.FC<MatrixEncoderModuleProps> = ({
               <div>
                 <span className="font-bold">PCA Subspace Fitted:</span>{' '}
                 <span>
-                  Fitted on {calibrationInfo.count} uploaded {calibrationInfo.count === 1 ? 'matrix' : 'matrices'} with {calibrationInfo.effectiveK} active {calibrationInfo.effectiveK === 1 ? 'component' : 'components'}
-                  {calibrationInfo.effectiveK < calibrationInfo.requestedK
-                    ? ` (requested ${calibrationInfo.requestedK}; unsupported dimensions were removed).`
-                    : '.'}
+                  Fitted on {calibrationInfo.count} uploaded {calibrationInfo.count === 1 ? 'matrix' : 'matrices'} with a fixed K={calibrationInfo.effectiveK} vector.
                 </span>
                 <span className="ml-2 px-1.5 py-0.5 bg-white border border-emerald-300 rounded font-semibold text-emerald-800">
                   {(calibrationInfo.varianceExplained * 100).toFixed(1)}% Variance Explained
@@ -689,7 +688,12 @@ export const MatrixEncoderModule: React.FC<MatrixEncoderModuleProps> = ({
                 )}
                 {calibrationInfo.usedSyntheticAnchor && (
                   <div className="mt-1 font-semibold text-amber-900">
-                    Single-matrix bootstrap: a hidden contrasting anchor created this provisional 1D BO direction. The anchor is not exported and is automatically discarded when a second matrix is loaded.
+                    Single-matrix bootstrap: a hidden contrasting anchor created the data-informed direction. The anchor is not exported as a CSV row and is automatically discarded when a second matrix is loaded.
+                  </div>
+                )}
+                {calibrationInfo.completionComponentCount > 0 && (
+                  <div className="mt-1 font-semibold text-cyan-900">
+                    Fixed-length basis: {calibrationInfo.dataComponentCount} data-informed {calibrationInfo.dataComponentCount === 1 ? 'dimension' : 'dimensions'} + {calibrationInfo.completionComponentCount} deterministic orthogonal {calibrationInfo.completionComponentCount === 1 ? 'dimension' : 'dimensions'}. All {calibrationInfo.effectiveK} values are exported and decodable.
                   </div>
                 )}
               </div>
@@ -983,7 +987,7 @@ export const MatrixEncoderModule: React.FC<MatrixEncoderModuleProps> = ({
               Collective Latent Vectors CSV (Ready for Bayesian Optimization)
             </h3>
             <p className="text-xs text-slate-500 mt-0.5">
-              Contains <strong>{matrices.length} rows</strong> (1 row per matrix) with <strong>{effectiveK} active normalized parameters</strong> in range <code>[0.0, 1.0]</code>, paired to model <code>{autoencoder.modelId}</code>.
+              Contains <strong>{matrices.length} rows</strong> (1 row per matrix) with exactly <strong>{effectiveK} normalized parameters</strong> in range <code>[0.0, 1.0]</code>, paired to model <code>{autoencoder.modelId}</code>.
             </p>
           </div>
 

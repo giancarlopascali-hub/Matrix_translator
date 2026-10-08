@@ -2,11 +2,13 @@
  * Header and Navigation Component (Bright Theme)
  */
 import React from 'react';
-import { Cpu, ArrowLeftRight, Binary } from 'lucide-react';
+import { Cpu, ArrowLeftRight, Binary, BookOpen } from 'lucide-react';
+
+export type AppTab = 'guide' | 'module1' | 'module2' | 'split';
 
 interface HeaderProps {
-  activeTab: 'module1' | 'module2' | 'split';
-  setActiveTab: (tab: 'module1' | 'module2' | 'split') => void;
+  activeTab: AppTab;
+  setActiveTab: (tab: AppTab) => void;
   onOpenModelModal: () => void;
 }
 
@@ -34,27 +36,40 @@ export const Header: React.FC<HeaderProps> = ({
         </div>
 
         {/* Navigation Tabs (Interactive Segmented Control in Bright Theme) */}
-        <div className="flex items-center gap-2.5">
-          <div className="flex items-center bg-slate-100 border border-slate-200 rounded-lg p-1 text-xs">
+        <div className="flex w-full min-w-0 items-center gap-2.5 md:w-auto">
+          <div className="flex min-w-0 flex-1 items-center overflow-x-auto bg-slate-100 border border-slate-200 rounded-lg p-1 text-xs md:flex-none">
+            <button
+              onClick={() => setActiveTab('guide')}
+              className={`flex shrink-0 items-center gap-1.5 px-3 py-1.5 rounded-md font-medium transition-all ${
+                activeTab === 'guide'
+                  ? 'bg-white text-violet-800 shadow-xs font-semibold'
+                  : 'text-slate-600 hover:text-slate-900'
+              }`}
+            >
+              <BookOpen className="w-3.5 h-3.5" />
+              Quick Guide
+            </button>
             <button
               onClick={() => setActiveTab('module1')}
-              className={`px-3 py-1.5 rounded-md font-medium transition-all ${
+              className={`shrink-0 px-3 py-1.5 rounded-md font-medium transition-all ${
                 activeTab === 'module1'
                   ? 'bg-white text-cyan-800 shadow-xs font-semibold'
                   : 'text-slate-600 hover:text-slate-900'
               }`}
             >
-              Module 1: Matrix Encoder
+              <span className="sm:hidden">Encoder</span>
+              <span className="hidden sm:inline">Module 1: Matrix Encoder</span>
             </button>
             <button
               onClick={() => setActiveTab('module2')}
-              className={`px-3 py-1.5 rounded-md font-medium transition-all ${
+              className={`shrink-0 px-3 py-1.5 rounded-md font-medium transition-all ${
                 activeTab === 'module2'
                   ? 'bg-white text-emerald-800 shadow-xs font-semibold'
                   : 'text-slate-600 hover:text-slate-900'
               }`}
             >
-              Module 2: Latent Decoder
+              <span className="sm:hidden">Decoder</span>
+              <span className="hidden sm:inline">Module 2: Latent Decoder</span>
             </button>
             <button
               onClick={() => setActiveTab('split')}
@@ -72,7 +87,7 @@ export const Header: React.FC<HeaderProps> = ({
           {/* Model Architecture Button */}
           <button
             onClick={onOpenModelModal}
-            className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-50 hover:bg-slate-100 border border-slate-200 text-slate-700 hover:text-slate-900 rounded-lg text-xs font-medium transition-colors shadow-2xs"
+            className="flex shrink-0 items-center gap-1.5 px-3 py-1.5 bg-slate-50 hover:bg-slate-100 border border-slate-200 text-slate-700 hover:text-slate-900 rounded-lg text-xs font-medium transition-colors shadow-2xs"
           >
             <Cpu className="w-3.5 h-3.5 text-cyan-700" />
             <span className="hidden sm:inline">PCA &amp; BO</span> Pipeline

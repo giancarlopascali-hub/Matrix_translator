@@ -77,6 +77,7 @@ export interface PCABasis {
   totalVariance: number;
   fittedCount: number;        // number of matrices used to fit
   syntheticAnchorUsed?: boolean; // true when a hidden anchor bootstrapped a one-matrix fit
+  dataComponentCount?: number; // remaining components are deterministic orthogonal completion
 }
 
 export interface ReconstructedMatrix {
@@ -107,6 +108,8 @@ export interface FitResult {
   requestedComponents?: number;
   effectiveRank?: number;
   usedSyntheticAnchor: boolean;
+  dataComponentCount: number;
+  completionComponentCount: number;
   explainedVarianceRatios: number[];   // per-component fractions, sum ≤ 1
   cumulativeVarianceRatios: number[];  // cumulative fractions
 }

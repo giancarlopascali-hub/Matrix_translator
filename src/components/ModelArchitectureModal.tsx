@@ -100,7 +100,7 @@ export const ModelArchitectureModal: React.FC<ModelArchitectureModalProps> = ({
                 Why PCA for Bayesian Optimization?
               </h4>
               <p className="leading-relaxed">
-                Rather than treating all <strong>{autoencoder.inputDim}</strong> matrix entries independently, PCA extracts the <strong>{autoencoder.k}</strong> dominant orthogonal eigenvectors.
+                Rather than treating all <strong>{autoencoder.inputDim}</strong> matrix entries independently, the model uses data-supported PCA directions and deterministic orthogonal completion to keep every vector exactly <strong>K = {autoencoder.k}</strong> values long.
               </p>
               <p className="leading-relaxed">
                 Each projection is normalized to the unit hypercube <strong>[0, 1]^K</strong>, which matches the standard parameter bounds expected by <strong>EDOS</strong> and Gaussian Process Bayesian Optimizers.
