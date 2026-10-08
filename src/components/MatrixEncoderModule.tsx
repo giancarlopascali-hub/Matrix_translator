@@ -81,6 +81,7 @@ export const MatrixEncoderModule: React.FC<MatrixEncoderModuleProps> = ({
     recall: number;
     requestedK: number;
     effectiveK: number;
+    usedSyntheticAnchor: boolean;
   } | null>(null);
 
   // Dynamic matrix dimensions configuration
@@ -138,6 +139,7 @@ export const MatrixEncoderModule: React.FC<MatrixEncoderModuleProps> = ({
         recall: roundTrip.recall,
         requestedK: finalK,
         effectiveK: fitRes.numComponents,
+        usedSyntheticAnchor: fitRes.usedSyntheticAnchor,
       });
       setFitError(null);
 
@@ -172,6 +174,34 @@ export const MatrixEncoderModule: React.FC<MatrixEncoderModuleProps> = ({
       ...m,
       latent: undefined
     })));
+  };
+
+  const handleClearMatrices = () => {
+    autoencoder.reset();
+    setMatrices([]);
+    setSelectedMatrixId(null);
+    setCalibrationInfo(null);
+    setFitError(null);
+    setSearchQuery('');
+    setCurrentPage(1);
+  };
+
+  const handleRemoveMatrix = (matrixToRemove: MatrixItem) => {
+    const removeIndex = matrices.indexOf(matrixToRemove);
+    if (removeIndex < 0) return;
+
+    const remaining = matrices.filter((_, index) => index !== removeIndex);
+    setCurrentPage(1);
+
+    if (remaining.length === 0) {
+      handleClearMatrices();
+      return;
+    }
+
+    if (selectedMatrixId === matrixToRemove.id) {
+      setSelectedMatrixId(remaining[0].id);
+    }
+    fitPcaOnItems(remaining, targetK, targetRows, targetCols);
   };
 
   // Apply dimensions change
@@ -632,7 +662,7 @@ export const MatrixEncoderModule: React.FC<MatrixEncoderModuleProps> = ({
               <div>
                 <span className="font-bold">PCA Subspace Fitted:</span>{' '}
                 <span>
-                  Fitted on {calibrationInfo.count} matrices with {calibrationInfo.effectiveK} active components
+                  Fitted on {calibrationInfo.count} uploaded {calibrationInfo.count === 1 ? 'matrix' : 'matrices'} with {calibrationInfo.effectiveK} active {calibrationInfo.effectiveK === 1 ? 'component' : 'components'}
                   {calibrationInfo.effectiveK < calibrationInfo.requestedK
                     ? ` (requested ${calibrationInfo.requestedK}; unsupported dimensions were removed).`
                     : '.'}
@@ -655,6 +685,11 @@ export const MatrixEncoderModule: React.FC<MatrixEncoderModuleProps> = ({
                 {calibrationInfo.exactMatchRate < 1 && (
                   <div className="mt-1 font-semibold text-amber-900">
                     This representation is lossy. Increase K or use more structured input data before expecting exact reconstruction.
+                  </div>
+                )}
+                {calibrationInfo.usedSyntheticAnchor && (
+                  <div className="mt-1 font-semibold text-amber-900">
+                    Single-matrix bootstrap: a hidden contrasting anchor created this provisional 1D BO direction. The anchor is not exported and is automatically discarded when a second matrix is loaded.
                   </div>
                 )}
               </div>
@@ -777,11 +812,7 @@ export const MatrixEncoderModule: React.FC<MatrixEncoderModuleProps> = ({
             Matrices loaded: <strong className="text-slate-800">{matrices.length}</strong>
             {matrices.length > 0 && (
               <button
-                onClick={() => {
-                  setMatrices([]);
-                  setSelectedMatrixId(null);
-                  setCalibrationInfo(null);
-                }}
+                onClick={handleClearMatrices}
                 className="ml-3 text-red-600 hover:text-red-700 font-semibold"
               >
                 Clear All
@@ -800,7 +831,7 @@ export const MatrixEncoderModule: React.FC<MatrixEncoderModuleProps> = ({
       )}
 
       {/* Main Content Area: Matrix List & Latent CSV Inspector */}
-      {matrices.length > 0 && autoencoder.hasDecodingBasis && latentCsvText && (
+      {matrices.length > 0 && (
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
           {/* Matrix Explorer Column */}
           <div className="lg:col-span-5 bg-white border border-slate-200 rounded-xl p-5 shadow-xs flex flex-col">
@@ -849,6 +880,18 @@ export const MatrixEncoderModule: React.FC<MatrixEncoderModuleProps> = ({
                       <span>{m.rows}×{m.cols}</span>
                       <span className="text-slate-300">·</span>
                       <span className="text-cyan-700 font-bold">{m.nonZeroCount} active</span>
+                      <button
+                        type="button"
+                        aria-label={`Remove ${m.id}`}
+                        title={`Remove ${m.id}`}
+                        onClick={event => {
+                          event.stopPropagation();
+                          handleRemoveMatrix(m);
+                        }}
+                        className="ml-1 rounded p-1 text-slate-400 hover:bg-red-50 hover:text-red-700 transition-colors"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
                     </div>
                   </div>
                 );
@@ -932,7 +975,7 @@ export const MatrixEncoderModule: React.FC<MatrixEncoderModuleProps> = ({
       )}
 
       {/* Latent CSV Collective Download & Module 2 Bridge Bar */}
-      {matrices.length > 0 && (
+      {matrices.length > 0 && autoencoder.hasDecodingBasis && latentCsvText && (
         <div className="bg-white border border-slate-200 rounded-xl p-6 shadow-xs flex flex-col md:flex-row md:items-center justify-between gap-4">
           <div>
             <h3 className="text-sm font-bold text-slate-900 flex items-center gap-2">

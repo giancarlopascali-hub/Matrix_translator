@@ -52,6 +52,7 @@ export class MatrixPCA {
   public cumulativeVarianceRatios?: number[];
   public totalVariance?: number;
   public fittedCount?: number;
+  public usedSyntheticAnchor = false;
   public modelId?: string;
   public valueType: MatrixValueType = 'binary_01';
   public modelSource: ModelSource = 'preview';
@@ -220,6 +221,7 @@ export class MatrixPCA {
     this.modelSource = 'preview';
     this.modelId = undefined;
     this.valueType = 'binary_01';
+    this.usedSyntheticAnchor = false;
     this.lastError = undefined;
     this.fittedCount = 0;
     this.totalVariance = 1.0;
@@ -270,8 +272,36 @@ export class MatrixPCA {
   // Fit — PCA using only data-supported, non-zero-variance components
   // ─────────────────────────────────────────────────────────────────────────
 
+  private createSyntheticAnchor(matrix: Float32Array, valueType: MatrixValueType): Float32Array {
+    const anchor = new Float32Array(matrix.length);
+
+    if (valueType === 'binary_01') {
+      // An all-zero baseline is the least opinionated binary anchor. For an
+      // all-zero input, use all ones so the fitted direction is non-degenerate.
+      let hasOne = false;
+      for (let d = 0; d < matrix.length; d++) {
+        if (matrix[d] === 1) {
+          hasOne = true;
+          break;
+        }
+      }
+      if (!hasOne) anchor.fill(1);
+      return anchor;
+    }
+
+    // Continuous matrices also use zero as the baseline. If the matrix is too
+    // close to zero for a stable component, perturb one cell deterministically.
+    let distanceSq = 0;
+    for (let d = 0; d < matrix.length; d++) distanceSq += matrix[d] * matrix[d];
+    if (distanceSq <= 1e-6) {
+      anchor.set(matrix);
+      anchor[0] = matrix[0] + 1;
+    }
+    return anchor;
+  }
+
   public fit(matrices: Float32Array[]): FitResult {
-    const N = matrices.length;
+    const realCount = matrices.length;
     const D = this.inputDim;
     const requestedK = this.k;
 
@@ -279,12 +309,13 @@ export class MatrixPCA {
     this.isFitted = false;
     this.modelSource = 'preview';
     this.modelId = undefined;
+    this.usedSyntheticAnchor = false;
 
-    if (N < 2) {
-      throw new Error('At least two matrices are required to learn a BO latent representation. One matrix contains no learnable variation.');
+    if (realCount < 1) {
+      throw new Error('At least one matrix is required to learn a BO latent representation.');
     }
 
-    for (let i = 0; i < N; i++) {
+    for (let i = 0; i < realCount; i++) {
       if (matrices[i].length !== D) {
         throw new Error(`Matrix ${i + 1} has ${matrices[i].length} cells; expected exactly ${D} (${this.rows}×${this.cols}).`);
       }
@@ -301,18 +332,24 @@ export class MatrixPCA {
       return true;
     }) ? 'binary_01' : 'continuous_numeric';
 
+    const usedSyntheticAnchor = realCount === 1;
+    const trainingMatrices = usedSyntheticAnchor
+      ? [matrices[0], this.createSyntheticAnchor(matrices[0], fittedValueType)]
+      : matrices;
+    const N = trainingMatrices.length;
+
     const kEff = Math.min(requestedK, N - 1, D);
 
     // ── 1. Empirical Mean ───────────────────────────────────────────────────
     const mean = new Float64Array(D);
     for (let j = 0; j < D; j++) {
       let s = 0;
-      for (let i = 0; i < N; i++) s += matrices[i][j];
+      for (let i = 0; i < N; i++) s += trainingMatrices[i][j];
       mean[j] = s / N;
     }
 
     // ── 2. Centered matrix rows ──────────────────────────────────────────────
-    const C: Float64Array[] = matrices.map(m => {
+    const C: Float64Array[] = trainingMatrices.map(m => {
       const v = new Float64Array(D);
       for (let j = 0; j < D; j++) v[j] = m[j] - mean[j];
       return v;
@@ -455,7 +492,8 @@ export class MatrixPCA {
     this.zMax = zMax;
     this.k = components.length;
     this.totalVariance = totalVar;
-    this.fittedCount = N;
+    this.fittedCount = realCount;
+    this.usedSyntheticAnchor = usedSyntheticAnchor;
     this.isFitted = true;
     this.modelSource = 'trained';
     this.valueType = fittedValueType;
@@ -479,6 +517,7 @@ export class MatrixPCA {
       numComponents: components.length,
       requestedComponents: requestedK,
       effectiveRank: components.length,
+      usedSyntheticAnchor,
       explainedVarianceRatios,
       cumulativeVarianceRatios,
     };
@@ -758,7 +797,7 @@ export class MatrixPCA {
 
   public serializeBasis(): string {
     if (!this.hasDecodingBasis || !this.mean || !this.components || this.components.length === 0) {
-      throw new Error('There is no trained PCA basis to export. Fit at least two varying matrices first.');
+      throw new Error('There is no trained PCA basis to export. Fit at least one matrix first.');
     }
     this.modelId = this.computeModelId();
 
@@ -777,6 +816,7 @@ export class MatrixPCA {
       explainedVarianceRatios: this.explainedVarianceRatios || [],
       totalVariance: this.totalVariance || 0,
       fittedCount: this.fittedCount || 0,
+      syntheticAnchorUsed: this.usedSyntheticAnchor,
     };
     return JSON.stringify(basis, null, 2);
   }
@@ -861,6 +901,7 @@ export class MatrixPCA {
         : [];
       this.totalVariance = Number.isFinite(b.totalVariance) ? b.totalVariance : 0;
       this.fittedCount = Number.isInteger(b.fittedCount) && b.fittedCount >= 0 ? b.fittedCount : 0;
+      this.usedSyntheticAnchor = b.syntheticAnchorUsed === true;
       this.isFitted = true;
       this.modelSource = 'imported';
       this.modelId = computedModelId;

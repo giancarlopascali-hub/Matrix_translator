@@ -4,7 +4,7 @@ Matrix PCA Studio converts a library of equally sized matrices into normalized P
 
 ## Workflow
 
-1. Load at least two varying matrices in the encoder.
+1. Load one or more matrices in the encoder. With one matrix, the app uses a hidden contrasting anchor to create a provisional one-dimensional representation. The anchor is never exported as a matrix and is discarded automatically when a second real matrix is loaded.
 2. Review the measured round-trip accuracy and exact-matrix rate. Increase the requested `K` if the representation is too lossy.
 3. Download both the latent CSV and basis JSON. They share a `model_id` and must remain paired.
 4. Use only the `z1 ... zK` columns as bounded `[0, 1]` Bayesian-optimizer parameters. Objective columns may be appended without becoming latent coordinates.
@@ -25,3 +25,5 @@ npm run build
 ```
 
 The generated Python/NumPy adapter loads the exported JSON basis directly. It does not refit PCA, so its decoding math stays aligned with the web app.
+
+Uploaded matrices can be removed individually from the encoder list. The basis and latent CSV are refitted immediately using the remaining matrices.

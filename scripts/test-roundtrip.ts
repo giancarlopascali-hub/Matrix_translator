@@ -83,9 +83,38 @@ for (let i = 0; i < training45.length; i++) {
   assert(countDifferences(training45[i], reconstructed) === 0, `45×45 binary matrix ${i + 1} did not round-trip exactly.`);
 }
 
+const singleModel = new MatrixPCA(8, 8, 16);
+const singleFit = singleModel.fit([training[0]]);
+assert(singleFit.usedSyntheticAnchor, 'One-matrix fit did not use the hidden bootstrap anchor.');
+assert(singleFit.numComponents === 1, 'One matrix plus one anchor should produce one active component.');
+assert(singleModel.fittedCount === 1, 'Synthetic anchor was counted as an uploaded matrix.');
+assert(countDifferences(training[0], singleModel.decodeBinary(singleModel.encode(training[0]))) === 0, 'Single binary matrix did not round-trip exactly.');
+const singleBasis = JSON.parse(singleModel.serializeBasis());
+assert(singleBasis.syntheticAnchorUsed === true, 'Basis did not record its single-matrix bootstrap mode.');
+const importedSingle = new MatrixPCA(1, 1, 1);
+assert(importedSingle.loadBasis(JSON.stringify(singleBasis)), importedSingle.lastError || 'Single-matrix basis did not reload.');
+assert(importedSingle.usedSyntheticAnchor, 'Imported basis lost the synthetic-anchor metadata.');
+assert(countDifferences(training[0], importedSingle.decodeBinary(singleModel.encode(training[0]))) === 0, 'Imported single-matrix basis changed the matrix.');
+
+const zeroMatrix = new Float32Array(64);
+const zeroModel = new MatrixPCA(8, 8, 4);
+zeroModel.fit([zeroMatrix]);
+assert(countDifferences(zeroMatrix, zeroModel.decodeBinary(zeroModel.encode(zeroMatrix))) === 0, 'All-zero single matrix did not round-trip exactly.');
+
+const singleContinuous = Float32Array.from([0.1, -0.2, 0.3, 0.4]);
+const singleContinuousModel = new MatrixPCA(2, 2, 4);
+singleContinuousModel.fit([singleContinuous]);
+const singleContinuousDecoded = singleContinuousModel.decode(singleContinuousModel.encode(singleContinuous));
+for (let i = 0; i < singleContinuous.length; i++) {
+  assert(Math.abs(singleContinuous[i] - singleContinuousDecoded[i]) < 1e-6, 'Single continuous matrix did not round-trip accurately.');
+}
+
+const twoRealFit = singleModel.fit(training.slice(0, 2));
+assert(!twoRealFit.usedSyntheticAnchor && !singleModel.usedSyntheticAnchor, 'Synthetic anchor was not discarded after a second real matrix was loaded.');
+
 const failedRefit = new MatrixPCA(8, 8, 4);
 failedRefit.fit(training.slice(0, 4));
-assertThrows(() => failedRefit.fit([training[0]]), 'At least two matrices');
+assertThrows(() => failedRefit.fit([]), 'At least one matrix');
 assert(!failedRefit.hasDecodingBasis, 'A failed refit left a stale basis active.');
 assertThrows(() => imported.decode([0.5]), 'requires exactly K');
 assertThrows(() => imported.decode(new Array(imported.k).fill(1.1)), 'inside [0,1]');

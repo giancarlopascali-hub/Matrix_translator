@@ -76,6 +76,7 @@ export interface PCABasis {
   explainedVarianceRatios: number[];  // per-component explained variance fraction
   totalVariance: number;
   fittedCount: number;        // number of matrices used to fit
+  syntheticAnchorUsed?: boolean; // true when a hidden anchor bootstrapped a one-matrix fit
 }
 
 export interface ReconstructedMatrix {
@@ -105,6 +106,7 @@ export interface FitResult {
   numComponents: number;
   requestedComponents?: number;
   effectiveRank?: number;
+  usedSyntheticAnchor: boolean;
   explainedVarianceRatios: number[];   // per-component fractions, sum ≤ 1
   cumulativeVarianceRatios: number[];  // cumulative fractions
 }
