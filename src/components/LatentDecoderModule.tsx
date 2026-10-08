@@ -929,7 +929,7 @@ export const LatentDecoderModule: React.FC<LatentDecoderModuleProps> = ({
                             : 'bg-white border border-slate-200 text-slate-600 hover:text-slate-900'
                         }`}
                       >
-                        Binary Threshold (p &ge; {threshold.toFixed(2)})
+                        Binary Threshold (p &gt; {threshold.toFixed(2)})
                       </button>
                       <button
                         onClick={() => setDiscretizationMode('argmax')}
@@ -949,7 +949,7 @@ export const LatentDecoderModule: React.FC<LatentDecoderModuleProps> = ({
                   <div className="text-[11px] text-slate-600 bg-white p-2.5 rounded-lg border border-slate-200 flex items-start gap-1.5 shadow-2xs">
                     <Info className="w-3.5 h-3.5 text-cyan-600 shrink-0 mt-0.5" />
                     <span>
-                      Rule: <code className="text-cyan-800 font-semibold">cell = probability &ge; {threshold.toFixed(2)} ? 1 : 0</code>
+                      Rule: <code className="text-cyan-800 font-semibold">cell = probability &gt; {threshold.toFixed(2)} ? 1 : 0</code>
                       <br />
                       Adjusting threshold recalculates all binary reconstructions immediately.
                     </span>

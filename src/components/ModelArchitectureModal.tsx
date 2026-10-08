@@ -139,7 +139,7 @@ export const ModelArchitectureModal: React.FC<ModelArchitectureModalProps> = ({
               In Module 2, the user-defined threshold $\theta$ converts these probabilities back to discrete matrix entries:
               <br />
               <code className="text-amber-800 bg-white px-2 py-0.5 rounded border border-slate-200 font-mono font-semibold">
-                reconstructed_value = probability &gt;= threshold ? 1 : 0
+                reconstructed_value = probability &gt; threshold ? 1 : 0
               </code>
             </p>
           </div>

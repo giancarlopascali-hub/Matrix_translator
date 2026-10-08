@@ -36,7 +36,7 @@ export type OutputFormatMode =
   | 'json';
 
 export type DiscretizationMode =
-  | 'threshold'   // p >= threshold ? 1 : 0 (Binary mode)
+  | 'threshold'   // p > threshold ? 1 : 0 (Binary mode)
   | 'argmax'      // 1 at max column per row (categorical/one-hot)
   | 'continuous'; // raw probabilities [0.0 - 1.0]
 

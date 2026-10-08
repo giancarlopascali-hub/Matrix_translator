@@ -569,13 +569,13 @@ export class MatrixAutoencoder {
               bestCol = c;
             }
           }
-          if (bestCol >= 0 && maxP >= threshold) {
+          if (bestCol >= 0 && maxP > threshold) {
             data[r * cols + bestCol] = 1.0;
           }
         }
       } else {
         for (let i = 0; i < total; i++) {
-          data[i] = probabilities[i] >= threshold ? 1.0 : 0.0;
+          data[i] = probabilities[i] > threshold ? 1.0 : 0.0;
         }
       }
     } else {
@@ -912,7 +912,7 @@ def reconstruct_from_latent_csv(latent_csv="latent_8d.csv", threshold=0.5):
     probs = decoder.predict(latents)
     
     # Apply user-defined probability threshold for reconstruction
-    reconstructed_binary = (probs >= threshold).astype(np.int8)
+    reconstructed_binary = (probs > threshold).astype(np.int8)
     
     print(f"Reconstructed {len(reconstructed_binary)} matrices with threshold={threshold}")
     return reconstructed_binary, probs
