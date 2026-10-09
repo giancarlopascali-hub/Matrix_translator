@@ -551,9 +551,29 @@ export function formatLatentCsv(
     valueType?: 'binary_01' | 'continuous_numeric';
     modelId?: string;
     schemaVersion?: number;
+    dataComponentCount?: number;
+    syntheticAnchorUsed?: boolean;
   }
 ): string {
   const K = items[0]?.latent?.length ?? 8;
+  const formatCoordinate = (value: number): string => {
+    if (!Number.isFinite(value)) return '0';
+
+    // PCA arithmetic can leave values such as 4e-28 or
+    // 0.49999999999999994. Snap only numerical noise around the three common
+    // reference points, then use a readable non-scientific decimal format.
+    const anchors = [0, 0.5, 1];
+    let cleanValue = Math.max(0, Math.min(1, value));
+    for (const anchor of anchors) {
+      if (Math.abs(cleanValue - anchor) <= 1e-10) {
+        cleanValue = anchor;
+        break;
+      }
+    }
+    const fixed = cleanValue.toFixed(10).replace(/0+$/, '').replace(/\.$/, '');
+    return fixed === '' || fixed === '-0' ? '0' : fixed;
+  };
+
   let header = '# Matrix PCA Latent Vectors — normalized [0,1] per component\n';
   if (metadata) {
     header += `# dimensions: ${metadata.rows}x${metadata.cols}\n`;
@@ -561,15 +581,34 @@ export function formatLatentCsv(
     if (metadata.valueType) header += `# value_type: ${metadata.valueType}\n`;
     if (metadata.modelId) header += `# model_id: ${metadata.modelId}\n`;
     if (metadata.schemaVersion) header += `# schema_version: ${metadata.schemaVersion}\n`;
+    if (metadata.dataComponentCount !== undefined) {
+      const dataCount = Math.max(0, Math.min(K, Math.floor(metadata.dataComponentCount)));
+      const dimensionNames = Array.from({ length: K }, (_, index) => `z${index + 1}`);
+      const dataDimensions = dimensionNames.slice(0, dataCount);
+      const completionDimensions = dimensionNames.slice(dataCount);
+      const referenceLatent = items[0]?.latent ?? [];
+
+      header += `# data_informed_count: ${dataCount}\n`;
+      header += `# completion_count: ${K - dataCount}\n`;
+      header += `# dimension_roles: ${dimensionNames.map((name, index) => `${name}=${index < dataCount ? 'data_informed' : 'completion'}`).join(',')}\n`;
+      header += `# optimize_by_default: ${dataDimensions.length > 0 ? dataDimensions.join(',') : 'none'}\n`;
+      header += `# completion_dimensions: ${completionDimensions.length > 0 ? completionDimensions.join(',') : 'none'}\n`;
+      if (completionDimensions.length > 0) {
+        const references = completionDimensions.map((name, offset) => {
+          const index = dataCount + offset;
+          return `${name}=${formatCoordinate(referenceLatent[index] ?? 0.5)}`;
+        });
+        header += `# completion_reference_values: ${references.join(',')}\n`;
+      }
+      if (metadata.syntheticAnchorUsed) header += '# bootstrap_direction: z1\n';
+    }
   }
   header += '# z values are normalized to [0,1] — use the pca_basis.json for decoding\n';
   const colNames = Array.from({ length: K }, (_, i) => `z${i + 1}`).join(',');
   header += includeIdHeader ? `matrix_id,${colNames}\n` : `${colNames}\n`;
 
   const rows = items.map(item => {
-    const zFormatted = item.latent.map(v => {
-      return Number.isFinite(v) ? v.toString() : '0';
-    }).join(',');
+    const zFormatted = item.latent.map(formatCoordinate).join(',');
     return includeIdHeader ? `${item.id},${zFormatted}` : zFormatted;
   });
   return header + rows.join('\n');

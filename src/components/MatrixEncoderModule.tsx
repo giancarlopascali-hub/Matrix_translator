@@ -423,6 +423,8 @@ export const MatrixEncoderModule: React.FC<MatrixEncoderModuleProps> = ({
       valueType: isAllBinary ? 'binary_01' : 'continuous_numeric',
       modelId: autoencoder.modelId,
       schemaVersion: PCA_BASIS_SCHEMA_VERSION,
+      dataComponentCount: autoencoder.dataComponentCount,
+      syntheticAnchorUsed: autoencoder.usedSyntheticAnchor,
     });
   }, [matrices, includeIdHeader, targetRows, targetCols, autoencoder, autoencoder.modelId]);
 
@@ -987,7 +989,7 @@ export const MatrixEncoderModule: React.FC<MatrixEncoderModuleProps> = ({
               Collective Latent Vectors CSV (Ready for Bayesian Optimization)
             </h3>
             <p className="text-xs text-slate-500 mt-0.5">
-              Contains <strong>{matrices.length} rows</strong> (1 row per matrix) with exactly <strong>{effectiveK} normalized parameters</strong> in range <code>[0.0, 1.0]</code>, paired to model <code>{autoencoder.modelId}</code>.
+              Contains <strong>{matrices.length} rows</strong> (1 row per matrix) with exactly <strong>{effectiveK} normalized parameters</strong> in range <code>[0.0, 1.0]</code>, paired to model <code>{autoencoder.modelId}</code>. Comment metadata flags data-informed and completion dimensions, including recommended fixed reference values.
             </p>
           </div>
 

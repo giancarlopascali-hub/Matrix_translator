@@ -71,7 +71,7 @@ export const QuickGuide: React.FC<QuickGuideProps> = ({ onOpenEncoder, onOpenDec
               Two separate tasks, joined by a matching basis
             </h2>
             <p className="mt-3 max-w-3xl text-sm leading-6 text-slate-600">
-              Use the Encoder when creating numerical representations. Use the Decoder later when turning EDOS
+              Use the Encoder when creating numerical representations. Use the Decoder later when turning optimizer
               candidates back into matrices. The <strong>basis JSON</strong> is the key that connects the two tasks.
             </p>
           </div>
@@ -126,7 +126,7 @@ export const QuickGuide: React.FC<QuickGuideProps> = ({ onOpenEncoder, onOpenDec
             <div className="mb-2 flex items-center gap-2"><StepBadge>4</StepBadge><span className="text-sm font-bold text-slate-900">Download both files</span></div>
             <div className="flex items-center gap-2 rounded-lg border border-violet-200 bg-white px-3 py-2">
               <FileSpreadsheet className="h-5 w-5 shrink-0 text-violet-700" />
-              <div><div className="text-xs font-bold text-slate-900">Latent CSV</div><div className="font-mono text-[10px] text-slate-500">K columns: z1 … zK</div></div>
+              <div><div className="text-xs font-bold text-slate-900">Latent CSV</div><div className="font-mono text-[10px] text-slate-500">K columns + dimension roles</div></div>
             </div>
             <div className="mt-2 flex items-center gap-2 rounded-lg border border-amber-200 bg-white px-3 py-2">
               <FileJson className="h-5 w-5 shrink-0 text-amber-700" />
@@ -153,7 +153,7 @@ export const QuickGuide: React.FC<QuickGuideProps> = ({ onOpenEncoder, onOpenDec
           </div>
           <div className="flex items-center gap-3 rounded-xl border border-fuchsia-200 bg-white p-4">
             <Sparkles className="h-7 w-7 shrink-0 text-fuchsia-700" />
-            <div><div className="text-sm font-bold text-slate-900">EDOS proposes candidate CSV</div><div className="text-xs text-slate-500">Keep the same z1…zK column names</div></div>
+            <div><div className="text-sm font-bold text-slate-900">Optimizer proposes candidate CSV</div><div className="text-xs text-slate-500">Keep the same z1…zK column names</div></div>
           </div>
         </div>
         <p className="mt-3 text-center text-[11px] leading-5 text-slate-500">
@@ -169,7 +169,7 @@ export const QuickGuide: React.FC<QuickGuideProps> = ({ onOpenEncoder, onOpenDec
               <p className="text-xs font-bold uppercase tracking-wider text-emerald-700">Decoding workflow</p>
             </div>
             <h3 className="mt-2 text-lg font-bold text-slate-900">Turn optimizer candidates into new matrices</h3>
-            <p className="mt-1 text-xs leading-5 text-slate-500">Do this after EDOS has proposed new z1…zK values.</p>
+            <p className="mt-1 text-xs leading-5 text-slate-500">Do this after your optimizer has proposed new z1…zK values.</p>
           </div>
           <button type="button" onClick={onOpenDecoder} className="inline-flex items-center justify-center gap-2 rounded-lg bg-emerald-700 px-4 py-2 text-xs font-bold text-white hover:bg-emerald-600">
             Open Decoder <ArrowRight className="h-4 w-4" />
@@ -179,7 +179,7 @@ export const QuickGuide: React.FC<QuickGuideProps> = ({ onOpenEncoder, onOpenDec
         <div className="grid items-stretch gap-3 lg:grid-cols-[1.15fr_auto_1fr_auto_1fr_auto_1fr]">
           <div className="flex min-h-40 flex-col justify-center gap-2 rounded-xl border border-emerald-200 bg-emerald-50 p-4">
             <div className="mb-1 flex items-center gap-2"><StepBadge>1</StepBadge><span className="text-sm font-bold text-slate-900">Load the two inputs</span></div>
-            <div className="flex items-center gap-2 rounded-lg border border-fuchsia-200 bg-white px-3 py-2"><FileSpreadsheet className="h-5 w-5 text-fuchsia-700" /><span className="text-xs font-bold">EDOS candidate CSV</span></div>
+            <div className="flex items-center gap-2 rounded-lg border border-fuchsia-200 bg-white px-3 py-2"><FileSpreadsheet className="h-5 w-5 text-fuchsia-700" /><span className="text-xs font-bold">Optimizer candidate CSV</span></div>
             <div className="flex items-center gap-2 rounded-lg border border-amber-200 bg-white px-3 py-2"><FileJson className="h-5 w-5 text-amber-700" /><span className="text-xs font-bold">Matching basis JSON</span></div>
           </div>
           <FlowArrow />
@@ -208,7 +208,7 @@ export const QuickGuide: React.FC<QuickGuideProps> = ({ onOpenEncoder, onOpenDec
         <div className="mt-4 flex items-start gap-3 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3">
           <KeyRound className="mt-0.5 h-5 w-5 shrink-0 text-amber-700" />
           <p className="text-xs leading-5 text-amber-950">
-            <strong>Important:</strong> use the exact basis JSON downloaded during the encoding task. It bypasses EDOS and must not be edited or replaced by a basis from another run.
+            <strong>Important:</strong> use the exact basis JSON downloaded during the encoding task. It bypasses the optimizer and must not be edited or replaced by a basis from another run.
           </p>
         </div>
       </section>

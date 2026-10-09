@@ -63,11 +63,20 @@ const latentCsv = formatLatentCsv(latentItems, true, {
   valueType: 'binary_01',
   modelId: model.modelId,
   schemaVersion: PCA_BASIS_SCHEMA_VERSION,
+  dataComponentCount: fit.dataComponentCount,
 });
 const parsedLatents = parseLatentCsv(latentCsv);
 assert(parsedLatents.length === training.length, 'Latent CSV row count changed after parsing.');
 assert(parsedLatents[0].id === '100', 'Numeric matrix IDs were not preserved.');
 assert(parsedLatents[0].detectedModelId === model.modelId, 'CSV model ID metadata was not preserved.');
+assert(latentCsv.includes(`# data_informed_count: ${fit.dataComponentCount}`), 'CSV does not report the data-informed dimension count.');
+assert(latentCsv.includes(`# completion_count: ${fit.completionComponentCount}`), 'CSV does not report the completion dimension count.');
+assert(latentCsv.includes('z1=data_informed'), 'CSV does not flag its learned dimensions.');
+if (fit.completionComponentCount > 0) {
+  const firstCompletion = `z${fit.dataComponentCount + 1}`;
+  assert(latentCsv.includes(`${firstCompletion}=completion`), 'CSV does not flag its completion dimensions.');
+  assert(latentCsv.includes('# completion_reference_values:'), 'CSV does not provide completion reference values.');
+}
 
 for (let i = 0; i < training.length; i++) {
   const reconstructed = imported.decodeBinary(parsedLatents[i].z);
@@ -96,6 +105,26 @@ assert(singleModel.fittedCount === 1, 'Synthetic anchor was counted as an upload
 assert(countDifferences(training[0], singleModel.decodeBinary(singleModel.encode(training[0]))) === 0, 'Single binary matrix did not round-trip exactly.');
 const singleBasis = JSON.parse(singleModel.serializeBasis());
 assert(singleBasis.syntheticAnchorUsed === true, 'Basis did not record its single-matrix bootstrap mode.');
+const singleCsv = formatLatentCsv([{
+  id: 'single',
+  latent: singleModel.encode(training[0]),
+}], true, {
+  rows: 8,
+  cols: 8,
+  k: 16,
+  valueType: 'binary_01',
+  modelId: singleModel.modelId,
+  schemaVersion: PCA_BASIS_SCHEMA_VERSION,
+  dataComponentCount: singleFit.dataComponentCount,
+  syntheticAnchorUsed: true,
+});
+const singleCsvDataRow = singleCsv.trim().split(/\r?\n/).at(-1) || '';
+assert(!/[eE][+-]?\d+/.test(singleCsvDataRow), 'Latent CSV exposed floating-point noise in scientific notation.');
+assert(singleCsv.includes('# bootstrap_direction: z1'), 'Single-matrix CSV did not identify its bootstrap direction.');
+assert(singleCsv.includes('z2=completion'), 'Single-matrix CSV did not flag completion dimensions.');
+const parsedSingleCsv = parseLatentCsv(singleCsv);
+assert(parsedSingleCsv.length === 1 && parsedSingleCsv[0].z.length === 16, 'Clean single-matrix CSV did not preserve K=16.');
+assert(countDifferences(training[0], singleModel.decodeBinary(parsedSingleCsv[0].z)) === 0, 'Readable CSV formatting changed the single-matrix round trip.');
 const importedSingle = new MatrixPCA(1, 1, 1);
 assert(importedSingle.loadBasis(JSON.stringify(singleBasis)), importedSingle.lastError || 'Single-matrix basis did not reload.');
 assert(importedSingle.usedSyntheticAnchor, 'Imported basis lost the synthetic-anchor metadata.');

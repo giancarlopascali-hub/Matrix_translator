@@ -10,6 +10,8 @@ Matrix PCA Studio converts a library of equally sized matrices into normalized P
 4. Use only the `z1 ... zK` columns as bounded `[0, 1]` Bayesian-optimizer parameters. Objective columns may be appended without becoming latent coordinates.
 5. Upload the optimizer's candidate CSV and the matching basis JSON in the decoder, in either order.
 
+The latent CSV includes comment metadata that identifies data-informed and completion dimensions, recommends the default optimization set, and records fixed reference values for completion dimensions. Coordinate values are exported as readable decimals rather than floating-point noise such as `4e-28`.
+
 The basis separates data-informed PCA dimensions from deterministic orthogonal completion dimensions. This keeps the CSV and decoder contract fixed at exactly `K` values even when only a few matrices are available, while reporting how many directions were actually learned from the data. The completion dimensions are valid decoder directions that let the optimizer explore outside the fitted library; they do not claim additional explained variance.
 
 PCA is compact and continuous, but it cannot losslessly encode every possible binary matrix with a small `K`. Exact reconstruction of the fitted library is possible when `K` spans that library's affine variation. The encoder reports measured round-trip accuracy and exact-match rate so lossy configurations remain visible.
