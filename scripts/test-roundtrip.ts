@@ -1,5 +1,6 @@
 import { MatrixPCA, PCA_BASIS_SCHEMA_VERSION } from '../src/lib/autoencoder.ts';
-import { formatLatentCsv, parseFlattenedCsv, parseLatentCsv } from '../src/lib/matrixFormats.ts';
+import { validateBinaryDesign } from '../src/lib/designValidation.ts';
+import { formatLatentCsv, formatValidatedLatentCsv, parseFlattenedCsv, parseLatentCsv } from '../src/lib/matrixFormats.ts';
 
 function assert(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(message);
@@ -34,6 +35,12 @@ function countDifferences(left: Float32Array, right: Float32Array): number {
   let differences = 0;
   for (let i = 0; i < left.length; i++) if (left[i] !== right[i]) differences++;
   return differences;
+}
+
+function binaryDesign(id: string, rows: number, cols: number, activeCells: Array<[number, number]>) {
+  const data = new Float32Array(rows * cols);
+  for (const [row, col] of activeCells) data[row * cols + col] = 1;
+  return { id, rows, cols, data };
 }
 
 const training = binaryMatrices(6, 64);
@@ -186,6 +193,53 @@ const lossyTraining = binaryMatrices(20, 64);
 lossyModel.fit(lossyTraining);
 assert(lossyModel.roundTripMetrics(lossyTraining).exactMatchRate < 1, 'Lossy PCA was incorrectly reported as exact.');
 
+const topCornerBridge: Array<[number, number]> = [
+  [0, 0], [0, 1], [1, 0], [1, 1],
+  [0, 4], [0, 5], [1, 4], [1, 5],
+  [1, 2], [1, 3],
+];
+const passingDesign = validateBinaryDesign(binaryDesign('passing', 6, 6, topCornerBridge));
+assert(passingDesign.validation === 1, 'A connected design with two corner blocks did not pass.');
+assert(passingDesign.componentCount === 1, 'The connected design reported more than one active component.');
+assert(passingDesign.qualifyingCorners.join(',') === 'top_left,top_right', 'The qualifying corners were identified incorrectly.');
+
+const disconnectedCorners = validateBinaryDesign(binaryDesign('disconnected', 6, 6, topCornerBridge.slice(0, 8)));
+assert(disconnectedCorners.validation === 0, 'Disconnected corner islands incorrectly passed validation.');
+assert(disconnectedCorners.componentCount === 2, 'Disconnected corner islands reported the wrong component count.');
+
+const diagonalCornerBridge = validateBinaryDesign(binaryDesign('diagonal-corners', 6, 6, [
+  [0, 0], [0, 1], [1, 0], [1, 1],
+  [4, 4], [4, 5], [5, 4], [5, 5],
+  [1, 2], [1, 3], [1, 4], [2, 4], [3, 4],
+]));
+assert(diagonalCornerBridge.validation === 1, 'Connected blocks in diagonally opposite corners did not pass.');
+assert(diagonalCornerBridge.qualifyingCorners.join(',') === 'top_left,bottom_right', 'Opposite corner blocks were identified incorrectly.');
+
+const oneCorner = validateBinaryDesign(binaryDesign('one-corner', 6, 6, [
+  [0, 0], [0, 1], [1, 0], [1, 1], [1, 2], [1, 3],
+]));
+assert(oneCorner.connected && oneCorner.validation === 0, 'A connected design with only one corner block incorrectly passed.');
+
+const diagonalOnly = validateBinaryDesign(binaryDesign('diagonal', 6, 6, [
+  [0, 0], [0, 1], [1, 0], [1, 1],
+  [2, 2], [3, 3],
+  [4, 4], [4, 5], [5, 4], [5, 5],
+]));
+assert(diagonalOnly.validation === 0 && diagonalOnly.componentCount > 1, 'Diagonal-only contact was incorrectly treated as connected.');
+
+const singlePhysicalCornerBlock = validateBinaryDesign(binaryDesign('tiny', 2, 2, [
+  [0, 0], [0, 1], [1, 0], [1, 1],
+]));
+assert(singlePhysicalCornerBlock.validation === 0, 'One physical 2x2 block was counted as multiple distinct corners.');
+
+const nonBinaryDesign = validateBinaryDesign({
+  id: 'non-binary',
+  rows: 2,
+  cols: 2,
+  data: Float32Array.from([1, 1, 1, 0.5]),
+});
+assert(!nonBinaryDesign.binaryValuesOnly && nonBinaryDesign.validation === 0, 'A non-binary matrix passed binary design validation.');
+
 const flattened = [
   'matrix_id,f0,f1,f2,f3',
   '7,0,1,1,0',
@@ -205,6 +259,26 @@ const optimizerCsv = [
 const optimizerRows = parseLatentCsv(optimizerCsv);
 assert(optimizerRows.length === 1 && optimizerRows[0].z.length === 2, 'Non-latent BO columns were parsed as z values.');
 assert(optimizerRows[0].id === '123', 'Numeric BO row ID was parsed as a latent coordinate.');
+
+const validatedOptimizerCsv = formatValidatedLatentCsv(optimizerCsv, optimizerRows, [1], 0.5);
+assert(validatedOptimizerCsv.includes('matrix_id,z1,z2,objective,validation'), 'Validation export did not append its column to the source header.');
+assert(validatedOptimizerCsv.includes('123,0.25,0.75,999,1'), 'Validation export changed or discarded optimizer row values.');
+assert(validatedOptimizerCsv.includes('# validation_connectivity: orthogonal_4'), 'Validation export omitted its connectivity contract.');
+assert(validatedOptimizerCsv.includes('# validation_corner_requirement: at_least_2_distinct_edge_anchored_2x2'), 'Validation export omitted its corner contract.');
+const reloadedValidatedRows = parseLatentCsv(validatedOptimizerCsv);
+assert(reloadedValidatedRows.length === 1, 'Validated latent CSV could not be loaded by the decoder.');
+assert(reloadedValidatedRows[0].z[0] === 0.25 && reloadedValidatedRows[0].z[1] === 0.75, 'Validated latent CSV changed latent coordinates.');
+
+const revalidatedOptimizerCsv = formatValidatedLatentCsv(validatedOptimizerCsv, reloadedValidatedRows, [0], 0.5);
+const revalidatedHeader = revalidatedOptimizerCsv.split(/\r?\n/).find(line => line.startsWith('matrix_id,')) || '';
+assert(revalidatedHeader.split(',').filter(column => column === 'validation').length === 1, 'Repeated validation export duplicated the validation column.');
+assert(revalidatedOptimizerCsv.includes('123,0.25,0.75,999,0'), 'Repeated validation export did not replace the old result.');
+
+const headerlessLatentCsv = 'candidate,0.2,0.8';
+const headerlessRows = parseLatentCsv(headerlessLatentCsv);
+const validatedHeaderlessCsv = formatValidatedLatentCsv(headerlessLatentCsv, headerlessRows, [0], 0.5);
+assert(validatedHeaderlessCsv.includes('matrix_id,z1,z2,validation'), 'Headerless validation export did not create a canonical header.');
+assert(validatedHeaderlessCsv.includes('candidate,0.2,0.8,0'), 'Headerless validation export changed its row identity or values.');
 
 const declaredKRows = parseLatentCsv([
   '# k: 3',

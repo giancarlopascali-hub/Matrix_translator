@@ -11,6 +11,7 @@ import {
   FileJson,
   FileSpreadsheet,
   KeyRound,
+  ShieldCheck,
   SlidersHorizontal,
   Sparkles,
   Upload,
@@ -210,6 +211,16 @@ export const QuickGuide: React.FC<QuickGuideProps> = ({ onOpenEncoder, onOpenDec
           <p className="text-xs leading-5 text-amber-950">
             <strong>Important:</strong> use the exact basis JSON downloaded during the encoding task. It bypasses the optimizer and must not be edited or replaced by a basis from another run.
           </p>
+        </div>
+
+        <div className="mt-4 flex flex-col gap-3 rounded-xl border border-violet-200 bg-violet-50 px-4 py-3 sm:flex-row sm:items-center">
+          <ShieldCheck className="h-6 w-6 shrink-0 text-violet-700" />
+          <div>
+            <div className="text-xs font-bold text-violet-950">Optional binary design validation</div>
+            <p className="mt-0.5 text-[11px] leading-5 text-violet-900/80">
+              In binary mode, validate connected 1-cells and corner 2×2 blocks, then download the original latent CSV with an added <code>validation</code> column.
+            </p>
+          </div>
         </div>
       </section>
 

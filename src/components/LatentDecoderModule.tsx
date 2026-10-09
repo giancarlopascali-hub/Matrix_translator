@@ -33,6 +33,7 @@ import {
   SAMPLE_CONTINUOUS_LATENT_CSV 
 } from '../lib/samples';
 import { MatrixHeatmap } from './MatrixHeatmap';
+import { DesignValidationPanel } from './DesignValidationPanel';
 import JSZip from 'jszip';
 import { 
   Upload, 
@@ -56,7 +57,8 @@ import {
   Check,
   CheckCircle2,
   AlertTriangle,
-  FolderDown
+  FolderDown,
+  ShieldCheck
 } from 'lucide-react';
 
 interface LatentDecoderModuleProps {
@@ -89,6 +91,8 @@ export const LatentDecoderModule: React.FC<LatentDecoderModuleProps> = ({
   const [pasteText, setPasteText] = useState<string>('');
   const [isPasteOpen, setIsPasteOpen] = useState<boolean>(false);
   const [showContinuousView, setShowContinuousView] = useState<boolean>(false);
+  const [sourceLatentCsv, setSourceLatentCsv] = useState<string>(initialLatentCsv || '');
+  const [isValidationVisible, setIsValidationVisible] = useState<boolean>(false);
 
   // Target reconstruction dimensions
   const [targetRows, setTargetRows] = useState<number>(initialDimensions?.rows || autoencoder.rows || 45);
@@ -154,12 +158,14 @@ export const LatentDecoderModule: React.FC<LatentDecoderModuleProps> = ({
   };
 
   // Helper to load parsed rows and check for embedded metadata
-  const applyLoadedLatentRows = (parsed: LatentRow[]) => {
+  const applyLoadedLatentRows = (parsed: LatentRow[], sourceText: string) => {
     if (parsed.length === 0) {
       setDecoderError('No valid latent rows were found in the CSV.');
       return;
     }
     setLatentRows(parsed);
+    setSourceLatentCsv(sourceText);
+    setIsValidationVisible(false);
     setSelectedMatrixId(parsed[0].id);
 
     // Default select all rows
@@ -188,7 +194,7 @@ export const LatentDecoderModule: React.FC<LatentDecoderModuleProps> = ({
   useEffect(() => {
     if (initialLatentCsv) {
       const parsed = parseLatentCsv(initialLatentCsv);
-      applyLoadedLatentRows(parsed);
+      applyLoadedLatentRows(parsed, initialLatentCsv);
     }
   }, [initialLatentCsv]);
 
@@ -199,7 +205,7 @@ export const LatentDecoderModule: React.FC<LatentDecoderModuleProps> = ({
 
     const text = await file.text();
     const parsed = parseLatentCsv(text);
-    applyLoadedLatentRows(parsed);
+    applyLoadedLatentRows(parsed, text);
     e.target.value = '';
   };
 
@@ -252,14 +258,14 @@ export const LatentDecoderModule: React.FC<LatentDecoderModuleProps> = ({
 
     const text = await file.text();
     const parsed = parseLatentCsv(text);
-    applyLoadedLatentRows(parsed);
+    applyLoadedLatentRows(parsed, text);
   };
 
   // Apply pasted latent CSV
   const handleApplyPaste = () => {
     if (!pasteText.trim()) return;
     const parsed = parseLatentCsv(pasteText);
-    applyLoadedLatentRows(parsed);
+    applyLoadedLatentRows(parsed, pasteText);
     setPasteText('');
     setIsPasteOpen(false);
   };
@@ -269,7 +275,7 @@ export const LatentDecoderModule: React.FC<LatentDecoderModuleProps> = ({
     setMatrixValueType('binary_01');
     handleUpdateDimensions(45, 45);
     const parsed = parseLatentCsv(SAMPLE_45X45_LATENT_CSV);
-    applyLoadedLatentRows(parsed);
+    applyLoadedLatentRows(parsed, SAMPLE_45X45_LATENT_CSV);
   };
 
   // Load sample binary latent CSV (200x21)
@@ -277,7 +283,7 @@ export const LatentDecoderModule: React.FC<LatentDecoderModuleProps> = ({
     setMatrixValueType('binary_01');
     handleUpdateDimensions(200, 21);
     const parsed = parseLatentCsv(SAMPLE_LATENT_CSV);
-    applyLoadedLatentRows(parsed);
+    applyLoadedLatentRows(parsed, SAMPLE_LATENT_CSV);
   };
 
   // Load sample continuous numerical latent CSV (10x10)
@@ -285,7 +291,7 @@ export const LatentDecoderModule: React.FC<LatentDecoderModuleProps> = ({
     setMatrixValueType('continuous_numeric');
     handleUpdateDimensions(10, 10);
     const parsed = parseLatentCsv(SAMPLE_CONTINUOUS_LATENT_CSV);
-    applyLoadedLatentRows(parsed);
+    applyLoadedLatentRows(parsed, SAMPLE_CONTINUOUS_LATENT_CSV);
   };
 
   // Ground truth map
@@ -616,7 +622,10 @@ export const LatentDecoderModule: React.FC<LatentDecoderModuleProps> = ({
                   Binary {`{0, 1}`}
                 </button>
                 <button
-                  onClick={() => setMatrixValueType('continuous_numeric')}
+                  onClick={() => {
+                    setMatrixValueType('continuous_numeric');
+                    setIsValidationVisible(false);
+                  }}
                   className={`px-3 py-1 rounded-md font-medium text-xs transition-all ${
                     matrixValueType === 'continuous_numeric'
                       ? 'bg-white text-cyan-800 shadow-2xs font-bold'
@@ -869,6 +878,41 @@ export const LatentDecoderModule: React.FC<LatentDecoderModuleProps> = ({
               )}
             </div>
           </div>
+
+          {/* Binary-only design validation */}
+          {matrixValueType === 'binary_01' && (
+            <>
+              <div className="flex flex-col gap-4 rounded-xl border border-violet-200 bg-gradient-to-r from-violet-50 via-white to-fuchsia-50 p-5 shadow-xs sm:flex-row sm:items-center sm:justify-between">
+                <div>
+                  <h3 className="flex items-center gap-2 text-sm font-bold text-slate-900">
+                    <ShieldCheck className="h-4 w-4 text-violet-700" />
+                    Design Validation
+                  </h3>
+                  <p className="mt-1 max-w-3xl text-xs leading-5 text-slate-600">
+                    Check whether every 1-cell is connected and whether at least two distinct corners contain an all-one 2×2 block. Validation is available only for binary matrices.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setIsValidationVisible(visible => !visible)}
+                  className="inline-flex shrink-0 items-center justify-center gap-1.5 rounded-lg bg-violet-700 px-4 py-2 text-xs font-semibold text-white shadow-xs transition-colors hover:bg-violet-800"
+                >
+                  <ShieldCheck className="h-4 w-4" />
+                  {isValidationVisible ? 'Hide Validation' : 'Validate'}
+                </button>
+              </div>
+
+              {isValidationVisible && (
+                <DesignValidationPanel
+                  matrices={reconstructedMatrices}
+                  latentRows={latentRows}
+                  sourceLatentCsv={sourceLatentCsv}
+                  threshold={threshold}
+                  decimalPrecision={decimalPrecision}
+                />
+              )}
+            </>
+          )}
 
           {/* Batch Download Bar */}
           <div className="bg-white border border-slate-200 rounded-xl p-6 shadow-xs flex flex-col md:flex-row md:items-center justify-between gap-4">

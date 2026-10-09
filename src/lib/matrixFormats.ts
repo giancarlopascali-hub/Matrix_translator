@@ -7,6 +7,24 @@ import { MatrixItem, ReconstructedMatrix, LatentRow } from './types';
 export const AMINO_ACIDS = ['A', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'K', 'L', 'M', 'N', 'P', 'Q', 'R', 'S', 'T', 'V', 'W', 'Y', '-'];
 export const AMINO_ACID_MAP = new Map<string, number>(AMINO_ACIDS.map((aa, idx) => [aa, idx]));
 
+function formatLatentCoordinate(value: number): string {
+  if (!Number.isFinite(value)) return '0';
+
+  // PCA arithmetic can leave values such as 4e-28 or
+  // 0.49999999999999994. Snap only numerical noise around the three common
+  // reference points, then use a readable non-scientific decimal format.
+  const anchors = [0, 0.5, 1];
+  let cleanValue = Math.max(0, Math.min(1, value));
+  for (const anchor of anchors) {
+    if (Math.abs(cleanValue - anchor) <= 1e-10) {
+      cleanValue = anchor;
+      break;
+    }
+  }
+  const fixed = cleanValue.toFixed(10).replace(/0+$/, '').replace(/\.$/, '');
+  return fixed === '' || fixed === '-0' ? '0' : fixed;
+}
+
 /**
  * Convert a sequence string (e.g. "MKWVT...") to a 200x21 one-hot Float32Array
  */
@@ -556,24 +574,6 @@ export function formatLatentCsv(
   }
 ): string {
   const K = items[0]?.latent?.length ?? 8;
-  const formatCoordinate = (value: number): string => {
-    if (!Number.isFinite(value)) return '0';
-
-    // PCA arithmetic can leave values such as 4e-28 or
-    // 0.49999999999999994. Snap only numerical noise around the three common
-    // reference points, then use a readable non-scientific decimal format.
-    const anchors = [0, 0.5, 1];
-    let cleanValue = Math.max(0, Math.min(1, value));
-    for (const anchor of anchors) {
-      if (Math.abs(cleanValue - anchor) <= 1e-10) {
-        cleanValue = anchor;
-        break;
-      }
-    }
-    const fixed = cleanValue.toFixed(10).replace(/0+$/, '').replace(/\.$/, '');
-    return fixed === '' || fixed === '-0' ? '0' : fixed;
-  };
-
   let header = '# Matrix PCA Latent Vectors — normalized [0,1] per component\n';
   if (metadata) {
     header += `# dimensions: ${metadata.rows}x${metadata.cols}\n`;
@@ -596,7 +596,7 @@ export function formatLatentCsv(
       if (completionDimensions.length > 0) {
         const references = completionDimensions.map((name, offset) => {
           const index = dataCount + offset;
-          return `${name}=${formatCoordinate(referenceLatent[index] ?? 0.5)}`;
+          return `${name}=${formatLatentCoordinate(referenceLatent[index] ?? 0.5)}`;
         });
         header += `# completion_reference_values: ${references.join(',')}\n`;
       }
@@ -608,10 +608,127 @@ export function formatLatentCsv(
   header += includeIdHeader ? `matrix_id,${colNames}\n` : `${colNames}\n`;
 
   const rows = items.map(item => {
-    const zFormatted = item.latent.map(formatCoordinate).join(',');
+    const zFormatted = item.latent.map(formatLatentCoordinate).join(',');
     return includeIdHeader ? `${item.id},${zFormatted}` : zFormatted;
   });
   return header + rows.join('\n');
+}
+
+/**
+ * Preserve a supplied latent/optimizer CSV and add one validation value per
+ * parsed latent row. Existing non-z columns (for example objective values) are
+ * retained. Headerless legacy files are converted to the canonical format.
+ */
+export function formatValidatedLatentCsv(
+  sourceText: string,
+  latentRows: LatentRow[],
+  validations: ReadonlyArray<0 | 1>,
+  threshold: number,
+): string {
+  if (latentRows.length !== validations.length) {
+    throw new Error('Validation results do not match the latent CSV row count.');
+  }
+  if (latentRows.length === 0) {
+    throw new Error('No latent rows are available for validation export.');
+  }
+
+  const validationMetadata = [
+    '# validation_rule: design_validation_v1',
+    '# validation_connectivity: orthogonal_4',
+    '# validation_corner_requirement: at_least_2_distinct_edge_anchored_2x2',
+    '# validation_values: 1=passed,0=failed',
+    `# validation_threshold: ${formatLatentCoordinate(threshold)}`,
+  ];
+  const isValidationMetadata = (line: string): boolean =>
+    /^#\s*validation_(?:rule|connectivity|corner_requirement|values|threshold):/i.test(line.trim());
+
+  const lines = sourceText.split(/\r?\n/);
+  let headerIndex = -1;
+  let delimiter = ',';
+  let headerTokens: string[] = [];
+  let latentColumns: number[] = [];
+
+  for (let index = 0; index < lines.length; index++) {
+    const trimmed = lines[index].trim();
+    if (!trimmed || trimmed.startsWith('#')) continue;
+    const candidateDelimiter = lines[index].includes('\t') ? '\t' : ',';
+    const tokens = lines[index].split(candidateDelimiter).map(token => token.trim());
+    const candidates = tokens
+      .map((token, tokenIndex) => ({ token, tokenIndex }))
+      .filter(({ token }) => /^z\d+$/i.test(token));
+    if (candidates.length > 0) {
+      headerIndex = index;
+      delimiter = candidateDelimiter;
+      headerTokens = tokens;
+      latentColumns = candidates.map(candidate => candidate.tokenIndex);
+      break;
+    }
+  }
+
+  if (headerIndex < 0) {
+    const preservedComments = lines
+      .map(line => line.trim())
+      .filter(line => line.startsWith('#') && !isValidationMetadata(line));
+    const k = latentRows[0].z.length;
+    const canonicalHeader = ['matrix_id', ...Array.from({ length: k }, (_, index) => `z${index + 1}`), 'validation'];
+    const canonicalRows = latentRows.map((row, index) => [
+      row.id,
+      ...row.z.map(formatLatentCoordinate),
+      String(validations[index]),
+    ].join(','));
+    return [...preservedComments, ...validationMetadata, canonicalHeader.join(','), ...canonicalRows].join('\n');
+  }
+
+  const validationColumn = headerTokens.findIndex(token => token.toLowerCase() === 'validation');
+  const output: string[] = [];
+  let validationRowIndex = 0;
+
+  for (let lineIndex = 0; lineIndex < lines.length; lineIndex++) {
+    const line = lines[lineIndex];
+    const trimmed = line.trim();
+    if (isValidationMetadata(trimmed)) continue;
+
+    if (lineIndex === headerIndex) {
+      output.push(...validationMetadata);
+      output.push(
+        validationColumn >= 0
+          ? headerTokens.join(delimiter)
+          : [...headerTokens, 'validation'].join(delimiter),
+      );
+      continue;
+    }
+
+    if (!trimmed || trimmed.startsWith('#')) {
+      output.push(line);
+      continue;
+    }
+
+    const rawTokens = line.split(delimiter);
+    const hasValidLatents = latentColumns.every(column =>
+      column < rawTokens.length && Number.isFinite(Number(rawTokens[column].trim())),
+    );
+    if (!hasValidLatents) {
+      output.push(line);
+      continue;
+    }
+    if (validationRowIndex >= validations.length) {
+      throw new Error('The source CSV contains more latent rows than the decoded collection.');
+    }
+
+    const value = String(validations[validationRowIndex++]);
+    if (validationColumn >= 0) {
+      while (rawTokens.length <= validationColumn) rawTokens.push('');
+      rawTokens[validationColumn] = value;
+    } else {
+      rawTokens.push(value);
+    }
+    output.push(rawTokens.join(delimiter));
+  }
+
+  if (validationRowIndex !== validations.length) {
+    throw new Error('The source CSV contains fewer latent rows than the decoded collection.');
+  }
+  return output.join('\n');
 }
 
 /**
