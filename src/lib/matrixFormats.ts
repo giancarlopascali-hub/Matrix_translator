@@ -633,9 +633,9 @@ export function formatValidatedLatentCsv(
   }
 
   const validationMetadata = [
-    '# validation_rule: design_validation_v2',
+    '# validation_rule: design_validation_v3',
     '# validation_connectivity: orthogonal_4',
-    '# validation_ignored_islands: bounding_box_at_most_2x2',
+    '# validation_ignored_islands: bounding_box_at_most_2x2_or_at_most_4_cells',
     '# validation_corner_requirement: at_least_2_distinct_edge_anchored_2x2',
     '# validation_values: 1=passed,0=failed',
     `# validation_threshold: ${formatLatentCoordinate(threshold)}`,

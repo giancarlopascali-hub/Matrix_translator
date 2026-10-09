@@ -19,10 +19,10 @@ type BinaryMatrixLike = Pick<ReconstructedMatrix, 'id' | 'rows' | 'cols' | 'data
 /**
  * Validate a thresholded binary design.
  *
- * A design passes when no more than one orthogonally connected component is
- * larger than a 2x2 bounding box and at least two distinct, edge-anchored
- * corner 2x2 blocks are all active. Small disconnected islands remain in the
- * matrix but are ignored for the connectivity verdict.
+ * A design passes when no more than one orthogonally connected component
+ * remains after ignoring islands that either fit inside a 2x2 bounding box or
+ * contain at most four cells. At least two distinct, edge-anchored corner 2x2
+ * blocks must also be active. Ignored islands remain in the output matrix.
  */
 export function validateBinaryDesign(matrix: BinaryMatrixLike): DesignValidationResult {
   const { id, rows, cols, data } = matrix;
@@ -38,7 +38,13 @@ export function validateBinaryDesign(matrix: BinaryMatrixLike): DesignValidation
 
   const visited = new Uint8Array(cellCount);
   const queue = new Int32Array(cellCount);
-  const components: Array<{ minRow: number; maxRow: number; minCol: number; maxCol: number }> = [];
+  const components: Array<{
+    cellCount: number;
+    minRow: number;
+    maxRow: number;
+    minCol: number;
+    maxCol: number;
+  }> = [];
 
   if (binaryValuesOnly) {
     for (let start = 0; start < cellCount; start++) {
@@ -52,6 +58,7 @@ export function validateBinaryDesign(matrix: BinaryMatrixLike): DesignValidation
       let maxRow = -1;
       let minCol = cols;
       let maxCol = -1;
+      let componentCellCount = 0;
 
       const visit = (index: number): void => {
         if (!visited[index] && data[index] === 1) {
@@ -64,6 +71,7 @@ export function validateBinaryDesign(matrix: BinaryMatrixLike): DesignValidation
         const index = queue[head++];
         const row = Math.floor(index / cols);
         const col = index % cols;
+        componentCellCount++;
         minRow = Math.min(minRow, row);
         maxRow = Math.max(maxRow, row);
         minCol = Math.min(minCol, col);
@@ -75,13 +83,15 @@ export function validateBinaryDesign(matrix: BinaryMatrixLike): DesignValidation
         if (col + 1 < cols) visit(index + 1);
       }
 
-      components.push({ minRow, maxRow, minCol, maxCol });
+      components.push({ cellCount: componentCellCount, minRow, maxRow, minCol, maxCol });
     }
   }
 
   const ignoredSmallComponentCount = components.filter(component =>
-    component.maxRow - component.minRow + 1 <= 2 &&
-    component.maxCol - component.minCol + 1 <= 2,
+    component.cellCount <= 4 || (
+      component.maxRow - component.minRow + 1 <= 2 &&
+      component.maxCol - component.minCol + 1 <= 2
+    ),
   ).length;
   const significantComponentCount = components.length - ignoredSmallComponentCount;
 

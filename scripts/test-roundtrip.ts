@@ -218,15 +218,39 @@ assert(mainRegionWithSmallIsland.validation === 1, 'A small disconnected island 
 assert(mainRegionWithSmallIsland.significantComponentCount === 1, 'The validator did not retain exactly one larger region.');
 assert(mainRegionWithSmallIsland.ignoredSmallComponentCount === 1, 'The small disconnected island was not ignored.');
 
-const multipleLargeRegions = validateBinaryDesign(binaryDesign('large-island', 8, 8, [
+const wideTopCornerBridge: Array<[number, number]> = [
   [0, 0], [0, 1], [1, 0], [1, 1],
   [0, 6], [0, 7], [1, 6], [1, 7],
   [1, 2], [1, 3], [1, 4], [1, 5],
+];
+const threeCellLine = validateBinaryDesign(binaryDesign('three-cell-line', 8, 8, [
+  ...wideTopCornerBridge,
   [4, 3], [5, 3], [6, 3],
 ]));
-assert(multipleLargeRegions.validation === 0, 'A disconnected region taller than 2x2 did not invalidate the design.');
+assert(threeCellLine.validation === 1, 'A disconnected three-cell line incorrectly invalidated the design.');
+assert(threeCellLine.ignoredSmallComponentCount === 1, 'A disconnected three-cell line was not ignored.');
+
+const fourCellLine = validateBinaryDesign(binaryDesign('four-cell-line', 8, 8, [
+  ...wideTopCornerBridge,
+  [3, 3], [4, 3], [5, 3], [6, 3],
+]));
+assert(fourCellLine.validation === 1, 'A disconnected four-cell line incorrectly invalidated the design.');
+assert(fourCellLine.ignoredSmallComponentCount === 1, 'A disconnected four-cell line was not ignored.');
+
+const fourCellStaggered = validateBinaryDesign(binaryDesign('four-cell-staggered', 8, 8, [
+  ...wideTopCornerBridge,
+  [4, 2], [4, 3], [5, 3], [5, 4],
+]));
+assert(fourCellStaggered.validation === 1, 'A disconnected staggered four-cell pattern incorrectly invalidated the design.');
+assert(fourCellStaggered.ignoredSmallComponentCount === 1, 'A disconnected staggered four-cell pattern was not ignored.');
+
+const multipleLargeRegions = validateBinaryDesign(binaryDesign('large-island', 8, 8, [
+  ...wideTopCornerBridge,
+  [3, 3], [4, 3], [5, 3], [6, 3], [7, 3],
+]));
+assert(multipleLargeRegions.validation === 0, 'A disconnected five-cell region did not invalidate the design.');
 assert(multipleLargeRegions.significantComponentCount === 2, 'The validator did not retain both larger disconnected regions.');
-assert(multipleLargeRegions.ignoredSmallComponentCount === 0, 'A 3x1 disconnected region was incorrectly treated as fitting within 2x2.');
+assert(multipleLargeRegions.ignoredSmallComponentCount === 0, 'A five-cell disconnected region was incorrectly ignored.');
 
 const diagonalCornerBridge = validateBinaryDesign(binaryDesign('diagonal-corners', 6, 6, [
   [0, 0], [0, 1], [1, 0], [1, 1],
@@ -285,8 +309,9 @@ assert(optimizerRows[0].id === '123', 'Numeric BO row ID was parsed as a latent 
 const validatedOptimizerCsv = formatValidatedLatentCsv(optimizerCsv, optimizerRows, [1], 0.5);
 assert(validatedOptimizerCsv.includes('matrix_id,z1,z2,objective,validation'), 'Validation export did not append its column to the source header.');
 assert(validatedOptimizerCsv.includes('123,0.25,0.75,999,1'), 'Validation export changed or discarded optimizer row values.');
+assert(validatedOptimizerCsv.includes('# validation_rule: design_validation_v3'), 'Validation export did not use the current rule version.');
 assert(validatedOptimizerCsv.includes('# validation_connectivity: orthogonal_4'), 'Validation export omitted its connectivity contract.');
-assert(validatedOptimizerCsv.includes('# validation_ignored_islands: bounding_box_at_most_2x2'), 'Validation export omitted its ignored-island contract.');
+assert(validatedOptimizerCsv.includes('# validation_ignored_islands: bounding_box_at_most_2x2_or_at_most_4_cells'), 'Validation export omitted its ignored-island contract.');
 assert(validatedOptimizerCsv.includes('# validation_corner_requirement: at_least_2_distinct_edge_anchored_2x2'), 'Validation export omitted its corner contract.');
 const reloadedValidatedRows = parseLatentCsv(validatedOptimizerCsv);
 assert(reloadedValidatedRows.length === 1, 'Validated latent CSV could not be loaded by the decoder.');

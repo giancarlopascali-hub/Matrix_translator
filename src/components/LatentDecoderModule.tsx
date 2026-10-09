@@ -928,7 +928,7 @@ export const LatentDecoderModule: React.FC<LatentDecoderModuleProps> = ({
                     Design Validation
                   </h3>
                   <p className="mt-1 max-w-3xl text-xs leading-5 text-slate-600">
-                    Ignore disconnected islands that fit within 2×2, reject multiple larger regions, and require all-one 2×2 blocks in at least two distinct corners. Validation is available only for binary matrices.
+                    Ignore disconnected islands that fit within 2×2 or contain at most four connected cells, reject multiple remaining regions, and require all-one 2×2 blocks in at least two distinct corners. Validation is available only for binary matrices.
                   </p>
                 </div>
                 <button

@@ -9,7 +9,7 @@ Matrix PCA Studio converts a library of equally sized matrices into normalized P
 3. Download both the latent CSV and basis JSON. They share a `model_id` and must remain paired.
 4. Use only the `z1 ... zK` columns as bounded `[0, 1]` Bayesian-optimizer parameters. Objective columns may be appended without becoming latent coordinates.
 5. Upload the optimizer's candidate CSV and the matching basis JSON in the decoder, in either order.
-6. For binary output, open Design Validation. Disconnected `1`-cell islands whose bounding box fits within `2×2` are ignored; validation fails when two or more larger regions remain. All-one `2×2` blocks are also required in at least two distinct matrix corners. Export the supplied latent CSV with an added `validation` column containing `0` or `1`.
+6. For binary output, open Design Validation. Disconnected `1`-cell islands are ignored when their bounding box fits within `2×2` or they contain at most four connected cells; validation fails when two or more non-ignored regions remain. All-one `2×2` blocks are also required in at least two distinct matrix corners. Export the supplied latent CSV with an added `validation` column containing `0` or `1`.
 
 The latent CSV includes comment metadata that identifies data-informed and completion dimensions, recommends the default optimization set, and records fixed reference values for completion dimensions. Coordinate values are exported as readable decimals rather than floating-point noise such as `4e-28`.
 

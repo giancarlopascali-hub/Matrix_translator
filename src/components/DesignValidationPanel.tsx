@@ -77,7 +77,7 @@ export const DesignValidationPanel: React.FC<DesignValidationPanelProps> = ({
             </span>
           </div>
           <p className="mt-1 max-w-3xl text-xs leading-5 text-slate-500">
-            A design passes when no more than one connected region is larger than 2×2 and at least two distinct matrix corners contain an all-one 2×2 block. Smaller disconnected islands are ignored.
+            A design passes when no more than one region remains after ignoring islands that fit within 2×2 or contain at most four connected cells. At least two distinct corners must contain an all-one 2×2 block.
           </p>
         </div>
 
@@ -107,8 +107,8 @@ export const DesignValidationPanel: React.FC<DesignValidationPanelProps> = ({
             ? result.significantComponentCount === 1
               ? '1 larger region retained'
               : 'no larger region retained'
-            : `${result.significantComponentCount} disconnected regions larger than 2×2`;
-          const ignoredText = `${result.ignoredSmallComponentCount} small island${result.ignoredSmallComponentCount === 1 ? '' : 's'} ignored`;
+            : `${result.significantComponentCount} non-ignored disconnected regions`;
+          const ignoredText = `${result.ignoredSmallComponentCount} ≤4-cell/2×2 island${result.ignoredSmallComponentCount === 1 ? '' : 's'} ignored`;
 
           return (
             <div
