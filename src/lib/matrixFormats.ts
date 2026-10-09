@@ -633,14 +633,15 @@ export function formatValidatedLatentCsv(
   }
 
   const validationMetadata = [
-    '# validation_rule: design_validation_v1',
+    '# validation_rule: design_validation_v2',
     '# validation_connectivity: orthogonal_4',
+    '# validation_ignored_islands: bounding_box_at_most_2x2',
     '# validation_corner_requirement: at_least_2_distinct_edge_anchored_2x2',
     '# validation_values: 1=passed,0=failed',
     `# validation_threshold: ${formatLatentCoordinate(threshold)}`,
   ];
   const isValidationMetadata = (line: string): boolean =>
-    /^#\s*validation_(?:rule|connectivity|corner_requirement|values|threshold):/i.test(line.trim());
+    /^#\s*validation_(?:rule|connectivity|ignored_islands|corner_requirement|values|threshold):/i.test(line.trim());
 
   const lines = sourceText.split(/\r?\n/);
   let headerIndex = -1;

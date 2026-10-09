@@ -83,6 +83,7 @@ export const LatentDecoderModule: React.FC<LatentDecoderModuleProps> = ({
   
   // Binary mode controls: Strictly '>' threshold
   const [threshold, setThreshold] = useState<number>(0.50);
+  const [thresholdInput, setThresholdInput] = useState<string>('0.50');
   const [decimalPrecision, setDecimalPrecision] = useState<number>(4);
 
   // File output options
@@ -125,6 +126,30 @@ export const LatentDecoderModule: React.FC<LatentDecoderModuleProps> = ({
     const validC = Math.max(1, Math.min(2000, c));
     setTargetRows(validR);
     setTargetCols(validC);
+  };
+
+  const handleThresholdSliderChange = (value: number) => {
+    setThreshold(value);
+    setThresholdInput(value.toFixed(2));
+  };
+
+  const handleThresholdInputChange = (value: string) => {
+    setThresholdInput(value);
+    if (value.trim() === '') return;
+    const parsed = Number(value);
+    if (Number.isFinite(parsed) && parsed >= 0 && parsed <= 1) {
+      setThreshold(parsed);
+    }
+  };
+
+  const commitThresholdInput = () => {
+    const parsed = thresholdInput.trim() === '' ? Number.NaN : Number(thresholdInput);
+    const clampedThreshold = Number.isFinite(parsed)
+      ? Math.max(0, Math.min(1, parsed))
+      : threshold;
+    const nextThreshold = Math.round(clampedThreshold * 100) / 100;
+    setThreshold(nextThreshold);
+    setThresholdInput(nextThreshold.toFixed(2));
   };
 
   const validateLatentRows = (parsed: LatentRow[], model: MatrixPCA): string | null => {
@@ -649,12 +674,26 @@ export const LatentDecoderModule: React.FC<LatentDecoderModuleProps> = ({
                   max="1.0"
                   step="0.01"
                   value={threshold}
-                  onChange={e => setThreshold(parseFloat(e.target.value))}
+                  onChange={e => handleThresholdSliderChange(parseFloat(e.target.value))}
                   className="w-28 accent-emerald-600 cursor-pointer"
                 />
-                <span className="font-mono font-bold text-emerald-800 bg-white px-2 py-0.5 rounded border border-slate-200 text-xs">
-                  θ = {threshold.toFixed(2)}
-                </span>
+                <label className="flex items-center gap-1 rounded border border-slate-200 bg-white px-2 py-0.5 font-mono text-xs font-bold text-emerald-800">
+                  <span>θ =</span>
+                  <input
+                    type="number"
+                    min="0"
+                    max="1"
+                    step="0.01"
+                    value={thresholdInput}
+                    onChange={event => handleThresholdInputChange(event.target.value)}
+                    onBlur={commitThresholdInput}
+                    onKeyDown={event => {
+                      if (event.key === 'Enter') event.currentTarget.blur();
+                    }}
+                    aria-label="Binary threshold value"
+                    className="w-14 bg-transparent text-right font-mono font-bold text-emerald-800 outline-hidden"
+                  />
+                </label>
                 <span className="text-[11px] text-slate-500 font-mono">
                   (strictly &gt; θ)
                 </span>
@@ -889,7 +928,7 @@ export const LatentDecoderModule: React.FC<LatentDecoderModuleProps> = ({
                     Design Validation
                   </h3>
                   <p className="mt-1 max-w-3xl text-xs leading-5 text-slate-600">
-                    Check whether every 1-cell is connected and whether at least two distinct corners contain an all-one 2×2 block. Validation is available only for binary matrices.
+                    Ignore disconnected islands that fit within 2×2, reject multiple larger regions, and require all-one 2×2 blocks in at least two distinct corners. Validation is available only for binary matrices.
                   </p>
                 </div>
                 <button

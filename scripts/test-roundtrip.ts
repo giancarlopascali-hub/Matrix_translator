@@ -201,11 +201,32 @@ const topCornerBridge: Array<[number, number]> = [
 const passingDesign = validateBinaryDesign(binaryDesign('passing', 6, 6, topCornerBridge));
 assert(passingDesign.validation === 1, 'A connected design with two corner blocks did not pass.');
 assert(passingDesign.componentCount === 1, 'The connected design reported more than one active component.');
+assert(passingDesign.significantComponentCount === 1, 'The main connected region was not retained.');
 assert(passingDesign.qualifyingCorners.join(',') === 'top_left,top_right', 'The qualifying corners were identified incorrectly.');
 
 const disconnectedCorners = validateBinaryDesign(binaryDesign('disconnected', 6, 6, topCornerBridge.slice(0, 8)));
-assert(disconnectedCorners.validation === 0, 'Disconnected corner islands incorrectly passed validation.');
+assert(disconnectedCorners.validation === 1, 'Disconnected 2x2 corner islands were not ignored.');
 assert(disconnectedCorners.componentCount === 2, 'Disconnected corner islands reported the wrong component count.');
+assert(disconnectedCorners.ignoredSmallComponentCount === 2, 'Disconnected 2x2 corner islands were not classified as small.');
+assert(disconnectedCorners.significantComponentCount === 0, 'Small corner islands were incorrectly retained as large regions.');
+
+const mainRegionWithSmallIsland = validateBinaryDesign(binaryDesign('small-island', 6, 6, [
+  ...topCornerBridge,
+  [5, 2], [5, 3],
+]));
+assert(mainRegionWithSmallIsland.validation === 1, 'A small disconnected island incorrectly invalidated the design.');
+assert(mainRegionWithSmallIsland.significantComponentCount === 1, 'The validator did not retain exactly one larger region.');
+assert(mainRegionWithSmallIsland.ignoredSmallComponentCount === 1, 'The small disconnected island was not ignored.');
+
+const multipleLargeRegions = validateBinaryDesign(binaryDesign('large-island', 8, 8, [
+  [0, 0], [0, 1], [1, 0], [1, 1],
+  [0, 6], [0, 7], [1, 6], [1, 7],
+  [1, 2], [1, 3], [1, 4], [1, 5],
+  [4, 3], [5, 3], [6, 3],
+]));
+assert(multipleLargeRegions.validation === 0, 'A disconnected region taller than 2x2 did not invalidate the design.');
+assert(multipleLargeRegions.significantComponentCount === 2, 'The validator did not retain both larger disconnected regions.');
+assert(multipleLargeRegions.ignoredSmallComponentCount === 0, 'A 3x1 disconnected region was incorrectly treated as fitting within 2x2.');
 
 const diagonalCornerBridge = validateBinaryDesign(binaryDesign('diagonal-corners', 6, 6, [
   [0, 0], [0, 1], [1, 0], [1, 1],
@@ -218,14 +239,15 @@ assert(diagonalCornerBridge.qualifyingCorners.join(',') === 'top_left,bottom_rig
 const oneCorner = validateBinaryDesign(binaryDesign('one-corner', 6, 6, [
   [0, 0], [0, 1], [1, 0], [1, 1], [1, 2], [1, 3],
 ]));
-assert(oneCorner.connected && oneCorner.validation === 0, 'A connected design with only one corner block incorrectly passed.');
+assert(oneCorner.connectivityPassed && oneCorner.validation === 0, 'A connected design with only one corner block incorrectly passed.');
 
 const diagonalOnly = validateBinaryDesign(binaryDesign('diagonal', 6, 6, [
   [0, 0], [0, 1], [1, 0], [1, 1],
   [2, 2], [3, 3],
   [4, 4], [4, 5], [5, 4], [5, 5],
 ]));
-assert(diagonalOnly.validation === 0 && diagonalOnly.componentCount > 1, 'Diagonal-only contact was incorrectly treated as connected.');
+assert(diagonalOnly.validation === 1, 'Disconnected regions fitting within 2x2 were not ignored.');
+assert(diagonalOnly.componentCount === diagonalOnly.ignoredSmallComponentCount, 'A small diagonal island was incorrectly retained.');
 
 const singlePhysicalCornerBlock = validateBinaryDesign(binaryDesign('tiny', 2, 2, [
   [0, 0], [0, 1], [1, 0], [1, 1],
@@ -264,6 +286,7 @@ const validatedOptimizerCsv = formatValidatedLatentCsv(optimizerCsv, optimizerRo
 assert(validatedOptimizerCsv.includes('matrix_id,z1,z2,objective,validation'), 'Validation export did not append its column to the source header.');
 assert(validatedOptimizerCsv.includes('123,0.25,0.75,999,1'), 'Validation export changed or discarded optimizer row values.');
 assert(validatedOptimizerCsv.includes('# validation_connectivity: orthogonal_4'), 'Validation export omitted its connectivity contract.');
+assert(validatedOptimizerCsv.includes('# validation_ignored_islands: bounding_box_at_most_2x2'), 'Validation export omitted its ignored-island contract.');
 assert(validatedOptimizerCsv.includes('# validation_corner_requirement: at_least_2_distinct_edge_anchored_2x2'), 'Validation export omitted its corner contract.');
 const reloadedValidatedRows = parseLatentCsv(validatedOptimizerCsv);
 assert(reloadedValidatedRows.length === 1, 'Validated latent CSV could not be loaded by the decoder.');

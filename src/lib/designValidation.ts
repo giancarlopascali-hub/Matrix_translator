@@ -8,7 +8,9 @@ export interface DesignValidationResult {
   binaryValuesOnly: boolean;
   activeCellCount: number;
   componentCount: number;
-  connected: boolean;
+  significantComponentCount: number;
+  ignoredSmallComponentCount: number;
+  connectivityPassed: boolean;
   qualifyingCorners: DesignCorner[];
 }
 
@@ -17,9 +19,10 @@ type BinaryMatrixLike = Pick<ReconstructedMatrix, 'id' | 'rows' | 'cols' | 'data
 /**
  * Validate a thresholded binary design.
  *
- * A design passes when every active cell belongs to one orthogonally connected
- * component and at least two distinct, edge-anchored corner 2x2 blocks are all
- * active. A larger all-one corner block necessarily contains the tested 2x2.
+ * A design passes when no more than one orthogonally connected component is
+ * larger than a 2x2 bounding box and at least two distinct, edge-anchored
+ * corner 2x2 blocks are all active. Small disconnected islands remain in the
+ * matrix but are ignored for the connectivity verdict.
  */
 export function validateBinaryDesign(matrix: BinaryMatrixLike): DesignValidationResult {
   const { id, rows, cols, data } = matrix;
@@ -35,17 +38,20 @@ export function validateBinaryDesign(matrix: BinaryMatrixLike): DesignValidation
 
   const visited = new Uint8Array(cellCount);
   const queue = new Int32Array(cellCount);
-  let componentCount = 0;
+  const components: Array<{ minRow: number; maxRow: number; minCol: number; maxCol: number }> = [];
 
   if (binaryValuesOnly) {
     for (let start = 0; start < cellCount; start++) {
       if (data[start] !== 1 || visited[start]) continue;
 
-      componentCount++;
       let head = 0;
       let tail = 0;
       queue[tail++] = start;
       visited[start] = 1;
+      let minRow = rows;
+      let maxRow = -1;
+      let minCol = cols;
+      let maxCol = -1;
 
       const visit = (index: number): void => {
         if (!visited[index] && data[index] === 1) {
@@ -58,14 +64,26 @@ export function validateBinaryDesign(matrix: BinaryMatrixLike): DesignValidation
         const index = queue[head++];
         const row = Math.floor(index / cols);
         const col = index % cols;
+        minRow = Math.min(minRow, row);
+        maxRow = Math.max(maxRow, row);
+        minCol = Math.min(minCol, col);
+        maxCol = Math.max(maxCol, col);
 
         if (row > 0) visit(index - cols);
         if (row + 1 < rows) visit(index + cols);
         if (col > 0) visit(index - 1);
         if (col + 1 < cols) visit(index + 1);
       }
+
+      components.push({ minRow, maxRow, minCol, maxCol });
     }
   }
+
+  const ignoredSmallComponentCount = components.filter(component =>
+    component.maxRow - component.minRow + 1 <= 2 &&
+    component.maxCol - component.minCol + 1 <= 2,
+  ).length;
+  const significantComponentCount = components.length - ignoredSmallComponentCount;
 
   const qualifyingCorners: DesignCorner[] = [];
   if (binaryValuesOnly && rows >= 2 && cols >= 2) {
@@ -94,16 +112,18 @@ export function validateBinaryDesign(matrix: BinaryMatrixLike): DesignValidation
     }
   }
 
-  const connected = binaryValuesOnly && activeCellCount > 0 && componentCount === 1;
-  const validation: 0 | 1 = connected && qualifyingCorners.length >= 2 ? 1 : 0;
+  const connectivityPassed = binaryValuesOnly && significantComponentCount <= 1;
+  const validation: 0 | 1 = connectivityPassed && qualifyingCorners.length >= 2 ? 1 : 0;
 
   return {
     matrixId: id,
     validation,
     binaryValuesOnly,
     activeCellCount,
-    componentCount,
-    connected,
+    componentCount: components.length,
+    significantComponentCount,
+    ignoredSmallComponentCount,
+    connectivityPassed,
     qualifyingCorners,
   };
 }

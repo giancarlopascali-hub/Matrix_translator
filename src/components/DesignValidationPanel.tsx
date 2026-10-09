@@ -77,7 +77,7 @@ export const DesignValidationPanel: React.FC<DesignValidationPanelProps> = ({
             </span>
           </div>
           <p className="mt-1 max-w-3xl text-xs leading-5 text-slate-500">
-            A design passes when all 1-cells form one orthogonally connected region and at least two distinct matrix corners contain an all-one 2×2 block.
+            A design passes when no more than one connected region is larger than 2×2 and at least two distinct matrix corners contain an all-one 2×2 block. Smaller disconnected islands are ignored.
           </p>
         </div>
 
@@ -103,11 +103,12 @@ export const DesignValidationPanel: React.FC<DesignValidationPanelProps> = ({
           const cornerText = result.qualifyingCorners.length > 0
             ? result.qualifyingCorners.map(corner => CORNER_LABELS[corner]).join(', ')
             : 'no qualifying corners';
-          const connectivityText = result.activeCellCount === 0
-            ? 'no active region'
-            : result.connected
-              ? '1 connected region'
-              : `${result.componentCount} disconnected regions`;
+          const connectivityText = result.connectivityPassed
+            ? result.significantComponentCount === 1
+              ? '1 larger region retained'
+              : 'no larger region retained'
+            : `${result.significantComponentCount} disconnected regions larger than 2×2`;
+          const ignoredText = `${result.ignoredSmallComponentCount} small island${result.ignoredSmallComponentCount === 1 ? '' : 's'} ignored`;
 
           return (
             <div
@@ -136,7 +137,7 @@ export const DesignValidationPanel: React.FC<DesignValidationPanelProps> = ({
                 </div>
                 <p className="mt-1 pl-6 text-[11px] leading-4 text-slate-600">
                   {result.binaryValuesOnly
-                    ? `${connectivityText} · ${result.qualifyingCorners.length} corner blocks (${cornerText}) · ${result.activeCellCount} active cells`
+                    ? `${connectivityText} · ${ignoredText} · ${result.qualifyingCorners.length} corner blocks (${cornerText}) · ${result.activeCellCount} active cells`
                     : 'Validation failed because the reconstructed matrix is not strictly binary.'}
                 </p>
               </div>

@@ -218,7 +218,7 @@ export const QuickGuide: React.FC<QuickGuideProps> = ({ onOpenEncoder, onOpenDec
           <div>
             <div className="text-xs font-bold text-violet-950">Optional binary design validation</div>
             <p className="mt-0.5 text-[11px] leading-5 text-violet-900/80">
-              In binary mode, validate connected 1-cells and corner 2×2 blocks, then download the original latent CSV with an added <code>validation</code> column.
+              In binary mode, ignore disconnected islands fitting within 2×2, reject multiple larger regions, check the corner 2×2 blocks, and download the latent CSV with an added <code>validation</code> column.
             </p>
           </div>
         </div>
